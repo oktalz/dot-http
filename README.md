@@ -10,15 +10,16 @@ This project includes two components:
 ## Install
 
 ```bash
-go install github.com/oktalz/dot-http
+go install github.com/oktalz/dot-http@latest
 ```
 
 ## Usage
 
 ```bash
-dot-http [-H|-B] <file.http> [request-name]
+dot-http [-v] [-H|-B] <file.http> [request-name]
 ```
 
+- **`-v`** — print version and exit
 - **`-H`** — print response headers only (no body)
 - **`-B`** — print response body only (no headers)
 - **`file.http`** — path to an `.http` file
@@ -58,7 +59,7 @@ Content-Type: application/json
 GET {{baseUrl}}/users
 ```
 
-**Environment variables** — loaded from a `.env` file in the same directory as the `.http` file:
+**Environment variables** — from system environment and a `.env` file in the current working directory (`.env` takes precedence):
 
 ```env
 API_URL=https://api.example.com
@@ -72,7 +73,7 @@ Authorization: Bearer {{TOKEN}}
 
 System environment variables are also available. Precedence (highest to lowest):
 
-1. `.env` file
+1. `.env` file (overrides system env)
 2. System environment variables
 3. File variables (`@var = value`)
 

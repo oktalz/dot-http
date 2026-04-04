@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/joho/godotenv"
+	"github.com/oktalz/dot-http/version"
 )
 
 // ResponseData mirrors the VSCode extension's response structure.
@@ -43,6 +46,9 @@ const (
 )
 
 func main() {
+	_ = version.Set() // Initialize version info from build data
+	_ = godotenv.Overload(".env")
+
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: %s [-H|-B] <file.http> [request-name]\n", os.Args[0])
 		os.Exit(1)
@@ -54,6 +60,9 @@ func main() {
 	// Parse flags
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
+		case "-v":
+			fmt.Println(version.Version)
+			os.Exit(0)
 		case "-H":
 			mode = outputHeaders
 		case "-B":
