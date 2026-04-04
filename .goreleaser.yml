@@ -19,7 +19,7 @@ builds:
     binary: dot-http
 
 archives:
-  - formats: []
+  - format: binary
 
 checksum:
   name_template: "checksums.txt"
