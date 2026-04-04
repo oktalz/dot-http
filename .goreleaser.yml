@@ -18,6 +18,9 @@ builds:
       - -s -w -X github.com/oktalz/dot-http/version.Version={{.Version}}
     binary: dot-http
 
+archives:
+  - formats: []
+
 checksum:
   name_template: "checksums.txt"
 
