@@ -1,0 +1,6 @@
+.local
+http-client.exe
+vsc-extension/AGENTS.md
+vsc-extension/test-auth.http
+vsc-extension/test.http
+.vscode

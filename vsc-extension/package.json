@@ -1,0 +1,76 @@
+{
+  "name": "dot-http",
+  "displayName": "dot-http",
+  "description": "rest http client",
+  "publisher": "ZlatkoBratkovic",
+  "license": "ISC",
+  "repository": {
+    "url": "https://github.com/oktalz/dot-http"
+  },
+  "version": "0.9.0",
+  "engines": {
+    "vscode": "^1.108.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:http"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "http",
+        "aliases": [
+          "HTTP",
+          "http"
+        ],
+        "extensions": [
+          ".http",
+          ".rest"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "dot-http.runRequest",
+        "title": "Run Request"
+      }
+    ],
+    "configuration": {
+      "title": "Http Client",
+      "properties": {
+        "dot-http.responseViewMode": {
+          "type": "string",
+          "default": "reuseTab",
+          "enum": [
+            "newTab",
+            "reuseTab",
+            "output"
+          ],
+          "description": "Where to show the response: in a new tab, reuse the same tab, or in the output channel."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.108.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@typescript-eslint/eslint-plugin": "^8.42.0",
+    "@typescript-eslint/parser": "^8.42.0",
+    "eslint": "^9.34.0",
+    "typescript": "^5.9.2",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
