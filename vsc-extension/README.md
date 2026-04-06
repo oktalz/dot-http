@@ -9,10 +9,15 @@ This project includes two components:
 
 ## Features
 
-- **Send HTTP Requests**: Execute requests defined in `.http` or `.rest` files.
-- **Variables**: Support for file variables (`@variableName = value`) and environment variables (via `.env` files).
-- **Request Chaining**: Use the response from one request as input for another.
-- **Multipart Form Data**: Send files and form data easily.
+- **Send HTTP Requests** — execute requests defined in `.http` or `.rest` files via a CodeLens button
+- **Variables** — file variables (`@var = value`), `.env` files, system environment variables
+- **Multiple environments** — switch env files per file using `@env`
+- **Request chaining** — use response data from one request in another
+- **Assertions** — assert status codes and response body/header values
+- **Cookie sessions** — persist cookies across requests using `@session`
+- **GraphQL** — automatic query wrapping
+- **Redirect control** — per-request opt-out with `# @no-follow`
+- **Importing other files** — share requests and variables across `.http` files
 
 ## Usage Examples
 
@@ -22,45 +27,126 @@ GET https://jsonplaceholder.typicode.com/posts/1
 ```
 
 ### Variables
-You can define variables at the top of your file and use them in your requests:
 ```http
 @baseUrl = https://jsonplaceholder.typicode.com
 @postId = 1
 
 GET {{baseUrl}}/posts/{{postId}}
 ```
-Variables can also come from a `.env` file in your workspace, or system environment variables:
+
+Variables can also come from a `.env` file in your workspace root or system environment:
 ```http
 GET {{baseUrl}}/posts?user={{$env USERNAME}}
 ```
 
-### Request Chaining
-You can name requests and use their responses in subsequent requests.
+### Multiple Environments
+
+Add `@env` at the top of your file to load a named env file:
 
 ```http
-### Get a post
+@env = prod
+
+###
+GET {{API_URL}}/users
+```
+
+This loads `prod.env` from the workspace root instead of `.env`.
+
+### Request Chaining
+```http
 # @name = getPost
 GET https://jsonplaceholder.typicode.com/posts/1
 
-### Use the post's userId to create a new post
+###
+
 # @requires = getPost
 POST https://jsonplaceholder.typicode.com/posts
 Content-Type: application/json
 
 {
     "title": "New Post",
-    "body": "This is a new post",
     "userId": {{getPost.body.userId}}
 }
 ```
 
-### Importing Other Files
+Available response fields:
 
-Split requests across files using `@import`. Imported files make their named requests and variables available to the current file.
+- `{{name.body.field}}` — JSON body field (dot notation)
+- `{{name.headers.Content-Type}}` — response header
+
+### Assertions
+
+Use `# @expect` to assert the status code and `# @assert` for body/header checks. Results are shown in the response panel.
+
+```http
+# @name = createUser
+# @expect 201
+# @assert body.name == John
+# @assert header.Content-Type contains application/json
+POST https://api.example.com/users
+Content-Type: application/json
+
+{"name": "John"}
+```
+
+Supported operators: `==`, `!=`, `contains`, `!contains`
+
+Assertion targets:
+
+- `status` — HTTP status code
+- `body.<path>` — JSON body field (dot notation)
+- `header.<Name>` — response header value
+
+### Cookie Sessions
+
+Add `@session` at the top of your file to persist cookies across requests:
+
+```http
+@session = session.json
+
+###
+# @name = login
+POST https://api.example.com/auth
+Content-Type: application/json
+
+{"username": "user", "password": "pass"}
+
+###
+# @requires = login
+GET https://api.example.com/profile
+```
+
+The session file is saved relative to the workspace root.
+
+### GraphQL
+
+Set `Content-Type: application/graphql` — the query is automatically wrapped as `{"query": "..."}` JSON:
+
+```http
+POST https://api.example.com/graphql
+Content-Type: application/graphql
+
+{
+  users {
+    id
+    name
+  }
+}
+```
+
+### Redirect Control
+
+By default redirects are followed (configurable via `dot-http.followRedirects`). To disable for a specific request:
+
+```http
+# @no-follow
+GET https://api.example.com/redirect
+```
+
+### Importing Other Files
 
 ```http
 @import = auth.http
-@import = helpers/users.http
 
 ###
 # @requires = login
@@ -68,23 +154,10 @@ GET https://api.example.com/profile
 Authorization: Bearer {{login.body.token}}
 ```
 
-Where `auth.http` contains:
-
-```http
-# @name = login
-POST https://api.example.com/auth
-Content-Type: application/json
-
-{"username": "user", "password": "pass"}
-```
-
 - Paths are relative to the importing file's directory
-- Multiple `@import` directives are supported
-- Imports are recursive (imported files can import other files)
-- Cyclic imports are detected and safely skipped
+- Imports are recursive; cyclic imports are safely skipped
 
 ### Sending Files (Multipart/Form-Data)
-You can upload files by using the `<` operator to include file contents.
 
 ```http
 POST https://httpbin.org/post
@@ -95,24 +168,21 @@ Content-Disposition: form-data; name="file1"; filename="README.md"
 Content-Type: text/markdown
 
 < ./README.md
---myBoundary
-Content-Disposition: form-data; name="file2"; filename="AGENTS.md"
-Content-Type: text/markdown
-
-< ./AGENTS.md
 --myBoundary--
 ```
 
 ## Extension Settings
 
-This extension contributes the following settings:
-
-* `dot-http.responseViewMode`: Configure where to display the response.
-  * `reuseTab` (Default): Updates a single tab with the response content.
-  * `newTab`: Opens a new tab for every response.
-  * `output`: Displays response in the "Http Client" Output Channel.
+| Setting | Default | Description |
+| --- | --- | --- |
+| `dot-http.responseViewMode` | `reuseTab` | Where to show the response: `reuseTab`, `newTab`, `output` |
+| `dot-http.timeout` | _(none)_ | Request timeout, e.g. `30s`, `1m`, `500ms`. Empty = no timeout |
+| `dot-http.followRedirects` | `true` | Automatically follow HTTP redirects |
 
 ## Release Notes
 
-### 1.0.0
-Initial release with variable handling, request chaining, and settings.
+### 0.9.0
+Added environments, assertions, cookie sessions, GraphQL support, redirect control, timeout setting.
+
+### 0.1.0
+Initial release with variable handling, request chaining, and imports.

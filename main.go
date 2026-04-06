@@ -4,19 +4,24 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/oktalz/dot-http/version"
 )
 
-// ResponseData mirrors the VSCode extension's response structure.
+// ResponseData holds the HTTP response.
 type ResponseData struct {
 	StatusCode    int
 	StatusMessage string
@@ -30,11 +35,20 @@ type Dependency struct {
 	Args map[string]string
 }
 
+// Assertion represents a # @assert directive.
+type Assertion struct {
+	Target string // "status", "body.<path>", "header.<name>"
+	Op     string // "==", "!=", "contains", "!contains"
+	Value  string
+}
+
 // RequestBlock represents a single request block in an .http file.
 type RequestBlock struct {
-	Name     string
-	Requires []Dependency
-	Text     string
+	Name         string
+	Requires     []Dependency
+	Text         string
+	ExpectStatus int // 0 = no assertion
+	Assertions   []Assertion
 }
 
 type outputMode int
@@ -45,28 +59,200 @@ const (
 	outputBody               // -B: body only
 )
 
+// Config holds all CLI flags.
+type Config struct {
+	mode        outputMode
+	outputFile  string
+	timeout     time.Duration
+	noFollow    bool
+	verbose     bool
+	sessionFile string
+	junitFile   string
+	envName     string
+}
+
+// TestResult collects assertion results for JUnit reporting.
+type TestResult struct {
+	Name     string
+	Failures []string
+}
+
+// JUnit XML structures.
+type junitTestSuites struct {
+	XMLName xml.Name         `xml:"testsuites"`
+	Suites  []junitTestSuite `xml:"testsuite"`
+}
+
+type junitTestSuite struct {
+	XMLName  xml.Name        `xml:"testsuite"`
+	Name     string          `xml:"name,attr"`
+	Tests    int             `xml:"tests,attr"`
+	Failures int             `xml:"failures,attr"`
+	Cases    []junitTestCase `xml:"testcase"`
+}
+
+type junitTestCase struct {
+	XMLName xml.Name      `xml:"testcase"`
+	Name    string        `xml:"name,attr"`
+	Failure *junitFailure `xml:"failure,omitempty"`
+}
+
+type junitFailure struct {
+	Message string `xml:"message,attr"`
+	Text    string `xml:",chardata"`
+}
+
+// cookieEntry is a serializable cookie for session files.
+type cookieEntry struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Domain   string `json:"domain"`
+	Path     string `json:"path"`
+	Secure   bool   `json:"secure"`
+	HttpOnly bool   `json:"httpOnly"`
+}
+
+// persistentJar wraps a standard cookie jar with JSON file persistence.
+type persistentJar struct {
+	inner   http.CookieJar
+	file    string
+	entries map[string][]cookieEntry // hostname -> cookies
+}
+
+func newPersistentJar(file string) (*persistentJar, error) {
+	inner, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	pj := &persistentJar{inner: inner, file: file, entries: make(map[string][]cookieEntry)}
+
+	if data, err := os.ReadFile(file); err == nil {
+		var loaded map[string][]cookieEntry
+		if json.Unmarshal(data, &loaded) == nil {
+			pj.entries = loaded
+			for hostname, cookies := range loaded {
+				u := &url.URL{Scheme: "https", Host: hostname}
+				var hc []*http.Cookie
+				for _, c := range cookies {
+					hc = append(hc, &http.Cookie{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path, Secure: c.Secure, HttpOnly: c.HttpOnly})
+				}
+				inner.SetCookies(u, hc)
+			}
+		}
+	}
+	return pj, nil
+}
+
+func (j *persistentJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	j.inner.SetCookies(u, cookies)
+	host := u.Hostname()
+	existing := make(map[string]int)
+	for i, e := range j.entries[host] {
+		existing[e.Name] = i
+	}
+	for _, c := range cookies {
+		entry := cookieEntry{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path, Secure: c.Secure, HttpOnly: c.HttpOnly}
+		if idx, ok := existing[c.Name]; ok {
+			j.entries[host][idx] = entry
+		} else {
+			j.entries[host] = append(j.entries[host], entry)
+		}
+	}
+}
+
+func (j *persistentJar) Cookies(u *url.URL) []*http.Cookie {
+	return j.inner.Cookies(u)
+}
+
+func (j *persistentJar) save() error {
+	data, err := json.MarshalIndent(j.entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(j.file, data, 0o600)
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, `Usage: dot-http [flags] <file.http> [request-name]
+
+Flags:
+  -v               Print version and exit
+  -V               Verbose: print request details before sending
+  -H               Print response headers only
+  -B               Print response body only
+  -o <file>        Save response body to file
+  --env <name>     Load <name>.env instead of .env
+  --timeout <dur>  Request timeout (e.g. 30s, 1m). Default: no timeout
+  --no-follow      Do not follow redirects
+  --session <file> Load/save cookies from/to a JSON session file
+  --junit <file>   Write JUnit XML test report to file
+`)
+}
+
 func main() {
-	_ = version.Set() // Initialize version info from build data
-	_ = godotenv.Load(".env")
+	_ = version.Set()
 
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-H|-B] <file.http> [request-name]\n", os.Args[0])
+		usage()
 		os.Exit(1)
 	}
 
-	mode := outputAll
+	cfg := &Config{}
 	args := os.Args[1:]
 
-	// Parse flags
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "-v":
 			fmt.Println(version.Version)
 			os.Exit(0)
+		case "-V":
+			cfg.verbose = true
 		case "-H":
-			mode = outputHeaders
+			cfg.mode = outputHeaders
 		case "-B":
-			mode = outputBody
+			cfg.mode = outputBody
+		case "-o":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "-o requires a filename")
+				os.Exit(1)
+			}
+			cfg.outputFile = args[1]
+			args = args[1:]
+		case "--env":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "--env requires a name")
+				os.Exit(1)
+			}
+			cfg.envName = args[1]
+			args = args[1:]
+		case "--timeout":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "--timeout requires a duration")
+				os.Exit(1)
+			}
+			d, err := time.ParseDuration(args[1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Invalid timeout %q: %v\n", args[1], err)
+				os.Exit(1)
+			}
+			cfg.timeout = d
+			args = args[1:]
+		case "--no-follow":
+			cfg.noFollow = true
+		case "--session":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "--session requires a filename")
+				os.Exit(1)
+			}
+			cfg.sessionFile = args[1]
+			args = args[1:]
+		case "--junit":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "--junit requires a filename")
+				os.Exit(1)
+			}
+			cfg.junitFile = args[1]
+			args = args[1:]
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown flag: %s\n", args[0])
 			os.Exit(1)
@@ -75,9 +261,16 @@ func main() {
 	}
 
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-H|-B] <file.http> [request-name]\n", os.Args[0])
+		usage()
 		os.Exit(1)
 	}
+
+	// Load environment file
+	envFile := ".env"
+	if cfg.envName != "" {
+		envFile = cfg.envName + ".env"
+	}
+	_ = godotenv.Load(envFile)
 
 	filePath := args[0]
 	var targetName string
@@ -92,7 +285,6 @@ func main() {
 	}
 	text := string(data)
 
-	// Process imports first
 	baseDir, _ := filepath.Abs(filepath.Dir(filePath))
 	absFilePath, _ := filepath.Abs(filePath)
 	visited := map[string]bool{absFilePath: true}
@@ -102,7 +294,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Local blocks come after imported ones so local names take precedence in lookup
 	localBlocks := parseDocumentRequests(text)
 	blocks := append(importedBlocks, localBlocks...)
 
@@ -111,7 +302,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Find target block
 	var target *RequestBlock
 	if targetName != "" {
 		for i := range blocks {
@@ -125,13 +315,11 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		// Run last block by default (like clicking the last request)
 		target = &blocks[len(blocks)-1]
 	}
 
-	// Build variables: imported vars < file vars < system env < .env file
 	fileVars := parseFileVariables(text)
-	envVars := loadEnvFile(filepath.Dir(filePath))
+	envVars := loadEnvFile(filepath.Dir(filePath), cfg.envName)
 	sysVars := loadSystemEnv()
 
 	context := make(map[string]any)
@@ -148,14 +336,72 @@ func main() {
 		context[k] = v
 	}
 
-	result, err := executeRequestChain(target, blocks, context, performRequest, make(map[string]bool))
+	// Build HTTP client
+	client, jar := buildClient(cfg)
+	defer func() {
+		if jar != nil {
+			_ = jar.save()
+		}
+	}()
+
+	var testResults []TestResult
+	performer := makePerformer(client, cfg)
+
+	result, err := executeRequestChain(target, blocks, context, performer, make(map[string]bool), &testResults)
+
+	// Write JUnit report regardless of error
+	if cfg.junitFile != "" {
+		if werr := writeJUnit(cfg.junitFile, filePath, testResults); werr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not write JUnit report: %v\n", werr)
+		}
+	}
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	if result != nil {
-		printResponse(result, mode)
+		if cfg.outputFile != "" {
+			if err := os.WriteFile(cfg.outputFile, []byte(result.Body), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			printResponse(result, cfg.mode)
+		}
+	}
+}
+
+func buildClient(cfg *Config) (*http.Client, *persistentJar) {
+	client := &http.Client{
+		Timeout: cfg.timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+
+	if cfg.noFollow {
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+
+	var jar *persistentJar
+	if cfg.sessionFile != "" {
+		j, err := newPersistentJar(cfg.sessionFile)
+		if err == nil {
+			jar = j
+			client.Jar = jar
+		}
+	}
+
+	return client, jar
+}
+
+func makePerformer(client *http.Client, cfg *Config) func(string) (*ResponseData, error) {
+	return func(text string) (*ResponseData, error) {
+		return performRequest(text, client, cfg)
 	}
 }
 
@@ -165,8 +411,8 @@ func executeRequestChain(
 	context map[string]any,
 	performer func(string) (*ResponseData, error),
 	visited map[string]bool,
+	testResults *[]TestResult,
 ) (*ResponseData, error) {
-	// Circular dependency check
 	if target.Name != "" {
 		if visited[target.Name] {
 			return nil, fmt.Errorf("circular dependency detected: %s", target.Name)
@@ -174,7 +420,6 @@ func executeRequestChain(
 		visited[target.Name] = true
 	}
 
-	// Execute dependencies first
 	for _, dep := range target.Requires {
 		if visited[dep.Name] {
 			return nil, fmt.Errorf("circular dependency detected: %s", dep.Name)
@@ -185,13 +430,11 @@ func executeRequestChain(
 			return nil, fmt.Errorf("dependency not found: %s", dep.Name)
 		}
 
-		// Substitute argument values using current context
 		depArgs := make(map[string]string)
 		for k, v := range dep.Args {
 			depArgs[k] = substituteVariables(v, context)
 		}
 
-		// Create child context with overridden variables
 		childContext := copyContext(context)
 		for k, v := range depArgs {
 			childContext[k] = v
@@ -201,12 +444,11 @@ func executeRequestChain(
 
 		if forceExecute || context[dep.Name] == nil {
 			childVisited := copyVisited(visited)
-			_, err := executeRequestChain(depBlock, allBlocks, childContext, performer, childVisited)
+			_, err := executeRequestChain(depBlock, allBlocks, childContext, performer, childVisited, testResults)
 			if err != nil {
 				return nil, err
 			}
 
-			// Merge response results back to parent context
 			for _, b := range allBlocks {
 				if b.Name != "" {
 					if val, ok := childContext[b.Name]; ok {
@@ -219,13 +461,24 @@ func executeRequestChain(
 		}
 	}
 
-	// Substitute variables in request text
 	resolvedText := substituteVariables(target.Text, context)
 
-	// Execute request
 	result, err := performer(resolvedText)
 	if err != nil {
 		return nil, err
+	}
+
+	// Check assertions
+	if target.ExpectStatus != 0 || len(target.Assertions) > 0 {
+		name := target.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		failures := checkAssertions(target, result)
+		*testResults = append(*testResults, TestResult{Name: name, Failures: failures})
+		if len(failures) > 0 {
+			return result, fmt.Errorf("assertion failed in %q: %s", name, strings.Join(failures, "; "))
+		}
 	}
 
 	// Store result in context if named
@@ -256,6 +509,90 @@ func executeRequestChain(
 	}
 
 	return result, nil
+}
+
+func checkAssertions(block *RequestBlock, result *ResponseData) []string {
+	var failures []string
+
+	if block.ExpectStatus != 0 && result.StatusCode != block.ExpectStatus {
+		failures = append(failures, fmt.Sprintf("expected status %d, got %d", block.ExpectStatus, result.StatusCode))
+	}
+
+	for _, a := range block.Assertions {
+		got := extractAssertValue(a.Target, result)
+		if !evalOp(got, a.Op, a.Value) {
+			failures = append(failures, fmt.Sprintf("%s %s %q (got: %q)", a.Target, a.Op, a.Value, got))
+		}
+	}
+
+	return failures
+}
+
+func extractAssertValue(target string, result *ResponseData) string {
+	if target == "status" {
+		return strconv.Itoa(result.StatusCode)
+	}
+	if strings.HasPrefix(target, "header.") {
+		return result.Headers.Get(strings.TrimPrefix(target, "header."))
+	}
+	if strings.HasPrefix(target, "body.") {
+		path := strings.TrimPrefix(target, "body.")
+		var jsonBody map[string]any
+		if json.Unmarshal([]byte(result.Body), &jsonBody) != nil {
+			return ""
+		}
+		parts := strings.Split(path, ".")
+		var current any = jsonBody
+		for _, p := range parts {
+			m, ok := current.(map[string]any)
+			if !ok {
+				return ""
+			}
+			current, ok = m[p]
+			if !ok {
+				return ""
+			}
+		}
+		return fmt.Sprintf("%v", current)
+	}
+	return ""
+}
+
+func evalOp(got, op, expected string) bool {
+	switch op {
+	case "==":
+		return got == expected
+	case "!=":
+		return got != expected
+	case "contains":
+		return strings.Contains(got, expected)
+	case "!contains":
+		return !strings.Contains(got, expected)
+	}
+	return false
+}
+
+func writeJUnit(file, suiteName string, results []TestResult) error {
+	suite := junitTestSuite{Name: suiteName}
+	for _, r := range results {
+		tc := junitTestCase{Name: r.Name}
+		suite.Tests++
+		if len(r.Failures) > 0 {
+			suite.Failures++
+			tc.Failure = &junitFailure{
+				Message: r.Failures[0],
+				Text:    strings.Join(r.Failures, "\n"),
+			}
+		}
+		suite.Cases = append(suite.Cases, tc)
+	}
+
+	suites := junitTestSuites{Suites: []junitTestSuite{suite}}
+	data, err := xml.MarshalIndent(suites, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file, append([]byte(xml.Header), data...), 0o644)
 }
 
 func findBlock(blocks []RequestBlock, name string) *RequestBlock {
@@ -289,6 +626,8 @@ var (
 	variableRegex = regexp.MustCompile(`^\s*@([^\s=]+)\s*=\s*(.+?)\s*$`)
 	importRegex   = regexp.MustCompile(`^\s*@import\s*=\s*(.+?)\s*$`)
 	substituteRe  = regexp.MustCompile(`\{\{(?:\$env\s+)?([^\s}]+)\}\}`)
+	expectRegex   = regexp.MustCompile(`^\s*#\s*@expect\s+(\d+)`)
+	assertRegex   = regexp.MustCompile(`^\s*#\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$`)
 )
 
 func parseDocumentRequests(text string) []RequestBlock {
@@ -304,19 +643,17 @@ func parseDocumentRequests(text string) []RequestBlock {
 
 		var name string
 		var requires []Dependency
+		var assertions []Assertion
+		expectStatus := 0
 
 		for _, l := range currentLines {
 			if m := nameRegex.FindStringSubmatch(l); m != nil {
 				name = m[1]
 			}
 			if m := requiresRegex.FindStringSubmatch(l); m != nil {
-				dep := Dependency{
-					Name: m[1],
-					Args: make(map[string]string),
-				}
+				dep := Dependency{Name: m[1], Args: make(map[string]string)}
 				if m[2] != "" {
-					parts := strings.Split(m[2], ",")
-					for _, part := range parts {
+					for _, part := range strings.Split(m[2], ",") {
 						kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
 						if len(kv) == 2 {
 							dep.Args[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
@@ -325,12 +662,20 @@ func parseDocumentRequests(text string) []RequestBlock {
 				}
 				requires = append(requires, dep)
 			}
+			if m := expectRegex.FindStringSubmatch(l); m != nil {
+				expectStatus, _ = strconv.Atoi(m[1])
+			}
+			if m := assertRegex.FindStringSubmatch(l); m != nil {
+				assertions = append(assertions, Assertion{Target: m[1], Op: m[2], Value: m[3]})
+			}
 		}
 
 		blocks = append(blocks, RequestBlock{
-			Name:     name,
-			Requires: requires,
-			Text:     blockText,
+			Name:         name,
+			Requires:     requires,
+			Text:         blockText,
+			ExpectStatus: expectStatus,
+			Assertions:   assertions,
 		})
 	}
 
@@ -343,7 +688,7 @@ func parseDocumentRequests(text string) []RequestBlock {
 			currentLines = append(currentLines, line)
 		}
 	}
-	processBlock() // last block
+	processBlock()
 
 	return blocks
 }
@@ -366,7 +711,7 @@ func parseImports(text string, baseDir string, visited map[string]bool) ([]Reque
 			}
 
 			if visited[absPath] {
-				continue // skip already-imported files to avoid cycles
+				continue
 			}
 			visited[absPath] = true
 
@@ -376,7 +721,6 @@ func parseImports(text string, baseDir string, visited map[string]bool) ([]Reque
 			}
 			importText := string(data)
 
-			// Recursively resolve imports in the imported file
 			importDir := filepath.Dir(absPath)
 			nestedBlocks, nestedVars, err := parseImports(importText, importDir, visited)
 			if err != nil {
@@ -387,7 +731,6 @@ func parseImports(text string, baseDir string, visited map[string]bool) ([]Reque
 			}
 			allBlocks = append(allBlocks, nestedBlocks...)
 
-			// Parse the imported file's own blocks and variables
 			for k, v := range parseFileVariables(importText) {
 				allVars[k] = v
 			}
@@ -417,7 +760,6 @@ func substituteVariables(text string, variables map[string]any) string {
 		}
 		varName := inner[1]
 
-		// Dot notation
 		if strings.Contains(varName, ".") {
 			parts := strings.Split(varName, ".")
 			var current any = variables
@@ -443,9 +785,13 @@ func substituteVariables(text string, variables map[string]any) string {
 	})
 }
 
-func loadEnvFile(dir string) map[string]string {
+func loadEnvFile(dir, envName string) map[string]string {
 	vars := make(map[string]string)
-	envPath := filepath.Join(dir, ".env")
+	filename := ".env"
+	if envName != "" {
+		filename = envName + ".env"
+	}
+	envPath := filepath.Join(dir, filename)
 
 	f, err := os.Open(envPath)
 	if err != nil {
@@ -465,8 +811,6 @@ func loadEnvFile(dir string) map[string]string {
 		}
 		key := strings.TrimSpace(line[:eqIdx])
 		value := strings.TrimSpace(line[eqIdx+1:])
-
-		// Strip surrounding quotes
 		if len(value) >= 2 {
 			if (value[0] == '"' && value[len(value)-1] == '"') ||
 				(value[0] == '\'' && value[len(value)-1] == '\'') {
@@ -489,11 +833,10 @@ func loadSystemEnv() map[string]string {
 	return vars
 }
 
-func parseRequest(text string) (method, url string, headers map[string]string, body string, ok bool) {
+func parseRequest(text string) (method, rawURL string, headers map[string]string, body string, ok bool) {
 	lines := strings.Split(text, "\n")
 	headers = make(map[string]string)
 
-	// Find first non-empty, non-comment line
 	methodLineIdx := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
@@ -513,9 +856,8 @@ func parseRequest(text string) (method, url string, headers map[string]string, b
 	}
 
 	method = parts[0]
-	url = parts[1]
+	rawURL = parts[1]
 
-	// Parse headers until blank line
 	bodyStartIdx := -1
 	for i := methodLineIdx + 1; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(strings.TrimRight(lines[i], "\r"))
@@ -539,10 +881,30 @@ func parseRequest(text string) (method, url string, headers map[string]string, b
 	return
 }
 
-func performRequest(requestText string) (*ResponseData, error) {
-	method, url, headers, body, ok := parseRequest(requestText)
+func performRequest(requestText string, client *http.Client, cfg *Config) (*ResponseData, error) {
+	method, rawURL, headers, body, ok := parseRequest(requestText)
 	if !ok {
 		return nil, fmt.Errorf("invalid request format")
+	}
+
+	// GraphQL: wrap plain query body as JSON
+	if ct, exists := headers["Content-Type"]; exists && strings.Contains(ct, "application/graphql") {
+		queryJSON, err := json.Marshal(map[string]string{"query": strings.TrimSpace(body)})
+		if err == nil {
+			body = string(queryJSON)
+			headers["Content-Type"] = "application/json"
+		}
+	}
+
+	if cfg.verbose {
+		fmt.Fprintf(os.Stderr, "> %s %s\n", method, rawURL)
+		for k, v := range headers {
+			fmt.Fprintf(os.Stderr, "> %s: %s\n", k, v)
+		}
+		if body != "" {
+			fmt.Fprintf(os.Stderr, ">\n%s\n", strings.TrimSpace(body))
+		}
+		fmt.Fprintln(os.Stderr)
 	}
 
 	var bodyReader io.Reader
@@ -550,19 +912,13 @@ func performRequest(requestText string) (*ResponseData, error) {
 		bodyReader = strings.NewReader(body)
 	}
 
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequest(method, rawURL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
 	for k, v := range headers {
 		req.Header.Set(k, v)
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-		},
 	}
 
 	resp, err := client.Do(req)
@@ -600,7 +956,6 @@ func printResponse(resp *ResponseData, mode outputMode) {
 		fmt.Println()
 	}
 
-	// Pretty-print JSON if possible
 	var jsonData any
 	if err := json.Unmarshal([]byte(resp.Body), &jsonData); err == nil {
 		pretty, err := json.MarshalIndent(jsonData, "", "  ")

@@ -16,14 +16,23 @@ go install github.com/oktalz/dot-http@latest
 ## Usage
 
 ```bash
-dot-http [-v] [-H|-B] <file.http> [request-name]
+dot-http [flags] <file.http> [request-name]
 ```
 
-- **`-v`** — print version and exit
-- **`-H`** — print response headers only (no body)
-- **`-B`** — print response body only (no headers)
-- **`file.http`** — path to an `.http` file
-- **`request-name`** — (optional) name of the request to run; defaults to the last block in the file
+### Flags
+
+| Flag | Description |
+| --- | --- |
+| `-v` | Print version and exit |
+| `-V` | Verbose: print request details before sending |
+| `-H` | Print response headers only (no body) |
+| `-B` | Print response body only (no headers) |
+| `-o <file>` | Save response body to a file |
+| `--env <name>` | Load `<name>.env` instead of `.env` |
+| `--timeout <dur>` | Request timeout, e.g. `30s`, `1m` (default: none) |
+| `--no-follow` | Do not follow redirects |
+| `--session <file>` | Load/save cookies from/to a JSON session file |
+| `--junit <file>` | Write JUnit XML test report to file |
 
 ## Features
 
@@ -71,13 +80,22 @@ GET {{API_URL}}/users
 Authorization: Bearer {{TOKEN}}
 ```
 
-System environment variables are also available. Precedence (highest to lowest):
+Precedence (highest to lowest):
 
 1. System environment variables
-2. `.env` file
+2. `.env` file (or `<name>.env` when using `--env <name>`)
 3. File variables (`@var = value`)
 
 Use `{{$env VAR}}` or `{{VAR}}` — both resolve through the same lookup.
+
+### Multiple environments
+
+Use `--env` to load a named environment file:
+
+```bash
+dot-http --env prod api.http        # loads prod.env
+dot-http --env staging api.http     # loads staging.env
+```
 
 ### Request chaining
 
@@ -98,6 +116,7 @@ Authorization: Bearer {{login.body.token}}
 ```
 
 Available response fields:
+
 - `{{name.body.field}}` — JSON response body (dot notation for nested fields)
 - `{{name.headers.Content-Type}}` — response headers
 
@@ -116,6 +135,62 @@ GET https://api.example.com/users/{{id}}
 GET https://api.example.com/compare
 ```
 
+### Assertions & testing
+
+Use `# @expect` to assert the response status code, and `# @assert` for header/body checks. Exit code is non-zero on failure — suitable for CI.
+
+```http
+# @name = createUser
+# @expect 201
+# @assert body.name == John
+# @assert header.Content-Type contains application/json
+POST https://api.example.com/users
+Content-Type: application/json
+
+{"name": "John"}
+```
+
+Supported operators: `==`, `!=`, `contains`, `!contains`
+
+Assertion targets:
+
+- `status` — HTTP status code
+- `body.<path>` — JSON body field (dot notation)
+- `header.<Name>` — response header value
+
+### JUnit XML reports
+
+Generate a JUnit-compatible XML report for CI/CD systems (GitHub Actions, Jenkins, etc.):
+
+```bash
+dot-http --junit report.xml api.http
+```
+
+### GraphQL
+
+Set `Content-Type: application/graphql` and write the query as the body — it will be automatically wrapped as `{"query": "..."}` JSON:
+
+```http
+POST https://api.example.com/graphql
+Content-Type: application/graphql
+
+{
+  users {
+    id
+    name
+  }
+}
+```
+
+### Cookie sessions
+
+Persist cookies between runs using a session file:
+
+```bash
+dot-http --session session.json api.http login
+dot-http --session session.json api.http profile   # reuses cookies from login
+```
+
 ### Importing other files
 
 Split requests across files using `@import`. Imported files make their named requests and variables available to the current file.
@@ -128,16 +203,6 @@ Split requests across files using `@import`. Imported files make their named req
 # @requires = login
 GET https://api.example.com/profile
 Authorization: Bearer {{login.body.token}}
-```
-
-Where `auth.http` contains:
-
-```http
-# @name = login
-POST https://api.example.com/auth
-Content-Type: application/json
-
-{"username": "user", "password": "pass"}
 ```
 
 - Paths are relative to the importing file's directory
@@ -158,14 +223,35 @@ dot-http api.http
 # Run a specific named request (and its dependencies)
 dot-http api.http login
 
-# Run a request that chains off others
-dot-http api.http create_post
+# Print version
+dot-http -v
+
+# Verbose: show request details before sending
+dot-http -V api.http login
 
 # Headers only
 dot-http -H api.http login
 
 # Body only (useful for piping to jq, etc.)
-dot-http -B api.http login
+dot-http -B api.http login | jq .
+
+# Save response body to file
+dot-http -o response.json api.http
+
+# Use a named environment
+dot-http --env prod api.http deploy
+
+# Set a request timeout
+dot-http --timeout 10s api.http slow_request
+
+# Do not follow redirects
+dot-http --no-follow api.http check_redirect
+
+# Persist cookies across requests
+dot-http --session cookies.json api.http login
+
+# Run assertions and output JUnit report
+dot-http --junit results.xml api.http create_user
 ```
 
-Output includes the full HTTP response (status, headers, body) with JSON pretty-printing. Use `-H` or `-B` to narrow the output.
+Output includes the full HTTP response (status, headers, body) with JSON pretty-printing.

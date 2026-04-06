@@ -50,6 +50,16 @@
             "output"
           ],
           "description": "Where to show the response: in a new tab, reuse the same tab, or in the output channel."
+        },
+        "dot-http.timeout": {
+          "type": "string",
+          "default": "",
+          "description": "Request timeout, e.g. '30s', '1m', '500ms'. Empty means no timeout."
+        },
+        "dot-http.followRedirects": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically follow HTTP redirects."
         }
       }
     }

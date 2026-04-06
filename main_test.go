@@ -296,7 +296,7 @@ EMPTY_LINE_ABOVE=yes`
 
 	os.WriteFile(filepath.Join(dir, ".env"), []byte(envContent), 0644)
 
-	vars := loadEnvFile(dir)
+	vars := loadEnvFile(dir, "")
 
 	tests := map[string]string{
 		"URL":              "https://api.example.com",
@@ -321,7 +321,7 @@ EMPTY_LINE_ABOVE=yes`
 }
 
 func TestLoadEnvFile_Missing(t *testing.T) {
-	vars := loadEnvFile(t.TempDir())
+	vars := loadEnvFile(t.TempDir(), "")
 	if len(vars) != 0 {
 		t.Errorf("expected empty map for missing .env, got %d entries", len(vars))
 	}
@@ -473,7 +473,7 @@ func TestExecuteChain_RecursiveDependencies(t *testing.T) {
 		return nil, fmt.Errorf("unknown request")
 	}
 
-	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool))
+	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestExecuteChain_CircularDependency(t *testing.T) {
 		return &ResponseData{StatusCode: 200, StatusMessage: "OK", Headers: http.Header{}, Body: `{}`}, nil
 	}
 
-	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool))
+	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err == nil {
 		t.Fatal("expected circular dependency error")
 	}
@@ -530,7 +530,7 @@ func TestExecuteChain_DependencyNotFound(t *testing.T) {
 		return &ResponseData{StatusCode: 200, StatusMessage: "OK", Headers: http.Header{}, Body: `{}`}, nil
 	}
 
-	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool))
+	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err == nil {
 		t.Fatal("expected dependency not found error")
 	}
@@ -565,7 +565,7 @@ func TestExecuteChain_CachesDependencies(t *testing.T) {
 	}
 
 	// First run: all execute
-	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool))
+	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestExecuteChain_CachesDependencies(t *testing.T) {
 
 	// Second run: B and C are cached, only A re-executes
 	order = nil
-	_, err = executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool))
+	_, err = executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestExecuteChain_ParameterizedDependencies(t *testing.T) {
 		return nil, fmt.Errorf("unknown")
 	}
 
-	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool))
+	_, err := executeRequestChain(&blockA, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestExecuteChain_VariableSubstitutionInRequest(t *testing.T) {
 		return nil, fmt.Errorf("unknown")
 	}
 
-	_, err := executeRequestChain(&blockProfile, allBlocks, context, performer, make(map[string]bool))
+	_, err := executeRequestChain(&blockProfile, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +694,7 @@ func TestExecuteChain_ResponseHeadersAccessible(t *testing.T) {
 		return nil, fmt.Errorf("unknown")
 	}
 
-	_, err := executeRequestChain(&blockAPI, allBlocks, context, performer, make(map[string]bool))
+	_, err := executeRequestChain(&blockAPI, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1123,7 +1123,7 @@ GET https://profile.test/{{login.body.userId}}
 	}
 
 	context := make(map[string]any)
-	_, err = executeRequestChain(target, allBlocks, context, performer, make(map[string]bool))
+	_, err = executeRequestChain(target, allBlocks, context, performer, make(map[string]bool), &[]TestResult{})
 	if err != nil {
 		t.Fatalf("chain error: %v", err)
 	}
