@@ -47,7 +47,7 @@ const (
 
 func main() {
 	_ = version.Set() // Initialize version info from build data
-	_ = godotenv.Overload(".env")
+	_ = godotenv.Load(".env")
 
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: %s [-H|-B] <file.http> [request-name]\n", os.Args[0])

@@ -59,7 +59,7 @@ Content-Type: application/json
 GET {{baseUrl}}/users
 ```
 
-**Environment variables** — from system environment and a `.env` file in the current working directory (`.env` takes precedence):
+**Environment variables** — from system environment and a `.env` file in the current working directory (system env takes precedence):
 
 ```env
 API_URL=https://api.example.com
@@ -73,8 +73,8 @@ Authorization: Bearer {{TOKEN}}
 
 System environment variables are also available. Precedence (highest to lowest):
 
-1. `.env` file (overrides system env)
-2. System environment variables
+1. System environment variables
+2. `.env` file
 3. File variables (`@var = value`)
 
 Use `{{$env VAR}}` or `{{VAR}}` — both resolve through the same lookup.
