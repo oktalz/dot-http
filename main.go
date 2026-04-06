@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/oktalz/dot-http/oauth2"
 	"github.com/oktalz/dot-http/version"
 )
 
@@ -49,6 +50,7 @@ type RequestBlock struct {
 	Text         string
 	ExpectStatus int // 0 = no assertion
 	Assertions   []Assertion
+	OAuth2       *oauth2.Params
 }
 
 type outputMode int
@@ -61,14 +63,15 @@ const (
 
 // Config holds all CLI flags.
 type Config struct {
-	mode        outputMode
-	outputFile  string
-	timeout     time.Duration
-	noFollow    bool
-	verbose     bool
-	sessionFile string
-	junitFile   string
-	envName     string
+	mode           outputMode
+	outputFile     string
+	timeout        time.Duration
+	noFollow       bool
+	verbose        bool
+	sessionFile    string
+	junitFile      string
+	envName        string
+	oauth2CacheFile string
 }
 
 // TestResult collects assertion results for JUnit reporting.
@@ -336,6 +339,20 @@ func main() {
 		context[k] = v
 	}
 
+	// Resolve @oauth2-cache from file text (variable-substituted)
+	if cfg.oauth2CacheFile == "" {
+		for _, line := range strings.Split(text, "\n") {
+			if m := oauth2CacheRegex.FindStringSubmatch(line); m != nil {
+				cfg.oauth2CacheFile = substituteVariables(m[1], context)
+				break
+			}
+		}
+	}
+	var oauth2Cache *oauth2.Cache
+	if cfg.oauth2CacheFile != "" {
+		oauth2Cache = oauth2.NewCache(cfg.oauth2CacheFile)
+	}
+
 	// Build HTTP client
 	client, jar := buildClient(cfg)
 	defer func() {
@@ -345,7 +362,7 @@ func main() {
 	}()
 
 	var testResults []TestResult
-	performer := makePerformer(client, cfg)
+	performer := makePerformer(client, cfg, oauth2Cache)
 
 	result, err := executeRequestChain(target, blocks, context, performer, make(map[string]bool), &testResults)
 
@@ -399,9 +416,9 @@ func buildClient(cfg *Config) (*http.Client, *persistentJar) {
 	return client, jar
 }
 
-func makePerformer(client *http.Client, cfg *Config) func(string) (*ResponseData, error) {
+func makePerformer(client *http.Client, cfg *Config, cache *oauth2.Cache) func(string) (*ResponseData, error) {
 	return func(text string) (*ResponseData, error) {
-		return performRequest(text, client, cfg)
+		return performRequest(text, client, cfg, cache)
 	}
 }
 
@@ -621,13 +638,14 @@ func copyVisited(src map[string]bool) map[string]bool {
 }
 
 var (
-	nameRegex     = regexp.MustCompile(`^\s*#\s*@name\s*=\s*(\w+)`)
-	requiresRegex = regexp.MustCompile(`^\s*#\s*@requires\s*=\s*(\w+)(?:\((.*)\))?`)
-	variableRegex = regexp.MustCompile(`^\s*@([^\s=]+)\s*=\s*(.+?)\s*$`)
-	importRegex   = regexp.MustCompile(`^\s*@import\s*=\s*(.+?)\s*$`)
-	substituteRe  = regexp.MustCompile(`\{\{(?:\$env\s+)?([^\s}]+)\}\}`)
-	expectRegex   = regexp.MustCompile(`^\s*#\s*@expect\s+(\d+)`)
-	assertRegex   = regexp.MustCompile(`^\s*#\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$`)
+	nameRegex        = regexp.MustCompile(`^\s*#\s*@name\s*=\s*(\w+)`)
+	requiresRegex    = regexp.MustCompile(`^\s*#\s*@requires\s*=\s*(\w+)(?:\((.*)\))?`)
+	variableRegex    = regexp.MustCompile(`^\s*@([^\s=]+)\s*=\s*(.+?)\s*$`)
+	importRegex      = regexp.MustCompile(`^\s*@import\s*=\s*(.+?)\s*$`)
+	oauth2CacheRegex = regexp.MustCompile(`^\s*@oauth2-cache\s*=\s*(.+?)\s*$`)
+	substituteRe     = regexp.MustCompile(`\{\{(?:\$env\s+)?([^\s}]+)\}\}`)
+	expectRegex      = regexp.MustCompile(`^\s*#\s*@expect\s+(\d+)`)
+	assertRegex      = regexp.MustCompile(`^\s*#\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$`)
 )
 
 func parseDocumentRequests(text string) []RequestBlock {
@@ -881,10 +899,22 @@ func parseRequest(text string) (method, rawURL string, headers map[string]string
 	return
 }
 
-func performRequest(requestText string, client *http.Client, cfg *Config) (*ResponseData, error) {
+func performRequest(requestText string, client *http.Client, cfg *Config, cache *oauth2.Cache) (*ResponseData, error) {
 	method, rawURL, headers, body, ok := parseRequest(requestText)
 	if !ok {
 		return nil, fmt.Errorf("invalid request format")
+	}
+
+	// OAuth2: acquire token and inject Authorization header if not already set
+	lines := strings.Split(requestText, "\n")
+	if p := oauth2.ParseParams(lines); p != nil {
+		if _, exists := headers["Authorization"]; !exists {
+			token, err := oauth2.AcquireToken(p, cache)
+			if err != nil {
+				return nil, fmt.Errorf("oauth2: %w", err)
+			}
+			headers["Authorization"] = "Bearer " + token
+		}
 	}
 
 	// GraphQL: wrap plain query body as JSON

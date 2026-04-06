@@ -214,6 +214,56 @@ Authorization: Bearer {{login.body.token}}
 
 The tool detects and reports circular dependencies with an error message.
 
+### OAuth2
+
+Declare OAuth2 directives as per-request comments. The token is acquired automatically and injected as `Authorization: Bearer <token>`. Tokens are cached with expiry so re-runs don't re-authenticate.
+
+#### Client Credentials (machine-to-machine)
+
+```http
+# @oauth2-grant = client_credentials
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-client-secret = {{CLIENT_SECRET}}
+# @oauth2-scope = read write
+GET https://api.example.com/resource
+```
+
+#### Authorization Code + PKCE (browser flow)
+
+Spins up a local server, opens the browser, captures the code, exchanges it for a token.
+
+```http
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = openid profile
+# @oauth2-redirect-port = 9876
+GET https://api.example.com/resource
+```
+
+#### Device Code Flow
+
+Prints the verification URL and user code, then polls until approved.
+
+```http
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-device-url = https://auth.example.com/oauth/device/code
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = read
+GET https://api.example.com/resource
+```
+
+#### Token caching
+
+Add `@oauth2-cache` at the file level to persist tokens across runs:
+
+```http
+@oauth2-cache = .tokens.json
+```
+
 ## Examples
 
 ```bash

@@ -143,6 +143,56 @@ By default redirects are followed (configurable via `dot-http.followRedirects`).
 GET https://api.example.com/redirect
 ```
 
+### OAuth2
+
+Declare OAuth2 directives as per-request comments. The token is acquired automatically and injected as `Authorization: Bearer <token>`. Tokens are cached with expiry.
+
+#### Client Credentials
+
+```http
+# @oauth2-grant = client_credentials
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-client-secret = {{CLIENT_SECRET}}
+# @oauth2-scope = read write
+GET https://api.example.com/resource
+```
+
+#### Authorization Code + PKCE (browser flow)
+
+Opens a browser tab and captures the callback on a local port.
+
+```http
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = openid profile
+# @oauth2-redirect-port = 9876
+GET https://api.example.com/resource
+```
+
+#### Device Code Flow
+
+Shows a notification with the verification URL and user code, then polls until approved.
+
+```http
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-device-url = https://auth.example.com/oauth/device/code
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = read
+GET https://api.example.com/resource
+```
+
+#### Token caching
+
+Add `@oauth2-cache` at the file level to persist tokens to a specific file. Otherwise tokens are cached to the file configured in `dot-http.oauth2CacheFile` (default `.tokens.json`).
+
+```http
+@oauth2-cache = .tokens.json
+```
+
 ### Importing Other Files
 
 ```http
@@ -178,11 +228,18 @@ Content-Type: text/markdown
 | `dot-http.responseViewMode` | `reuseTab` | Where to show the response: `reuseTab`, `newTab`, `output` |
 | `dot-http.timeout` | _(none)_ | Request timeout, e.g. `30s`, `1m`, `500ms`. Empty = no timeout |
 | `dot-http.followRedirects` | `true` | Automatically follow HTTP redirects |
+| `dot-http.oauth2CacheFile` | `.tokens.json` | Default token cache file (relative to workspace root) |
 
 ## Release Notes
 
+### 0.9.3
+
+Added expect, assert
+
 ### 0.9.0
+
 Added environments, assertions, cookie sessions, GraphQL support, redirect control, timeout setting.
 
 ### 0.1.0
+
 Initial release with variable handling, request chaining, and imports.

@@ -4,7 +4,8 @@ import * as http from 'http';
 import * as https from 'https';
 import * as fs from 'fs';
 import * as path from 'path';
-import { URL } from 'url';
+import * as crypto from 'crypto';
+import { URL, URLSearchParams } from 'url';
 
 const RESPONSE_SCHEME = 'http-client-response';
 
@@ -58,6 +59,257 @@ export interface RequestBlock {
 interface FileConfig {
     envName?: string;
     sessionFile?: string;
+    oauth2CacheFile?: string;
+}
+
+// ---------------------------------------------------------------------------
+// OAuth2
+// ---------------------------------------------------------------------------
+
+interface OAuth2Params {
+    grant: string;
+    tokenUrl: string;
+    authUrl?: string;
+    deviceUrl?: string;
+    clientId: string;
+    clientSecret?: string;
+    scope?: string;
+    redirectPort?: string;
+}
+
+interface OAuth2CacheEntry {
+    access_token: string;
+    expires_at: number; // unix seconds, 0 = no expiry
+}
+
+class OAuth2Cache {
+    private entries: Map<string, OAuth2CacheEntry> = new Map();
+    private file?: string;
+
+    constructor(file?: string) {
+        this.file = file;
+        if (file && fs.existsSync(file)) {
+            try {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, OAuth2CacheEntry>;
+                for (const [k, v] of Object.entries(data)) { this.entries.set(k, v); }
+            } catch { /* ignore */ }
+        }
+    }
+
+    get(key: string): string | undefined {
+        const e = this.entries.get(key);
+        if (!e) { return undefined; }
+        if (e.expires_at !== 0 && Date.now() / 1000 >= e.expires_at) {
+            this.entries.delete(key);
+            return undefined;
+        }
+        return e.access_token;
+    }
+
+    set(key: string, token: string, ttlSeconds: number) {
+        const expiresAt = ttlSeconds > 0 ? Math.floor(Date.now() / 1000) + ttlSeconds - 30 : 0;
+        this.entries.set(key, { access_token: token, expires_at: expiresAt });
+        this.save();
+    }
+
+    private save() {
+        if (!this.file) { return; }
+        const obj: Record<string, OAuth2CacheEntry> = {};
+        for (const [k, v] of this.entries) { obj[k] = v; }
+        try { fs.writeFileSync(this.file, JSON.stringify(obj, null, 2)); } catch { /* ignore */ }
+    }
+}
+
+const oauth2DirectiveRegexes: Record<string, RegExp> = {
+    grant:          /^\s*#\s*@oauth2-grant\s*=\s*(.+?)\s*$/,
+    tokenUrl:       /^\s*#\s*@oauth2-token-url\s*=\s*(.+?)\s*$/,
+    authUrl:        /^\s*#\s*@oauth2-auth-url\s*=\s*(.+?)\s*$/,
+    deviceUrl:      /^\s*#\s*@oauth2-device-url\s*=\s*(.+?)\s*$/,
+    clientId:       /^\s*#\s*@oauth2-client-id\s*=\s*(.+?)\s*$/,
+    clientSecret:   /^\s*#\s*@oauth2-client-secret\s*=\s*(.+?)\s*$/,
+    scope:          /^\s*#\s*@oauth2-scope\s*=\s*(.+?)\s*$/,
+    redirectPort:   /^\s*#\s*@oauth2-redirect-port\s*=\s*(.+?)\s*$/,
+};
+
+function parseOAuth2Params(lines: string[]): OAuth2Params | undefined {
+    const p: Partial<OAuth2Params> = {};
+    for (const line of lines) {
+        for (const [key, re] of Object.entries(oauth2DirectiveRegexes)) {
+            const m = line.match(re);
+            if (m) { (p as any)[key] = m[1]; }
+        }
+    }
+    if (!p.grant) { return undefined; }
+    if (!p.redirectPort) { p.redirectPort = '9876'; }
+    return p as OAuth2Params;
+}
+
+function oauth2CacheKey(p: OAuth2Params): string {
+    return `${p.grant}::${p.tokenUrl}::${p.clientId}::${p.scope ?? ''}`;
+}
+
+async function postToken(tokenUrl: string, params: Record<string, string>): Promise<{ token: string; expiresIn: number }> {
+    const body = new URLSearchParams(params).toString();
+    return new Promise((resolve, reject) => {
+        const parsed = new URL(tokenUrl);
+        const lib = parsed.protocol === 'https:' ? https : http;
+        const req = lib.request({
+            method: 'POST',
+            hostname: parsed.hostname,
+            port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+            path: parsed.pathname + parsed.search,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+        }, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                try {
+                    const data = JSON.parse(Buffer.concat(chunks).toString());
+                    if (data.error) { return reject(new Error(`oauth2 error "${data.error}": ${data.error_description || ''}`)); }
+                    if (!data.access_token) { return reject(new Error('oauth2: empty access_token')); }
+                    resolve({ token: data.access_token, expiresIn: data.expires_in ?? 0 });
+                } catch (e) { reject(e); }
+            });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+}
+
+async function acquireOAuth2Token(p: OAuth2Params, cache: OAuth2Cache): Promise<string> {
+    const key = oauth2CacheKey(p);
+    const cached = cache.get(key);
+    if (cached) { return cached; }
+
+    let token: string;
+    let expiresIn: number;
+
+    switch (p.grant) {
+        case 'client_credentials': {
+            const params: Record<string, string> = { grant_type: 'client_credentials', client_id: p.clientId };
+            if (p.clientSecret) { params['client_secret'] = p.clientSecret; }
+            if (p.scope) { params['scope'] = p.scope; }
+            ({ token, expiresIn } = await postToken(p.tokenUrl, params));
+            break;
+        }
+        case 'authorization_code': {
+            ({ token, expiresIn } = await authorizationCodeFlow(p));
+            break;
+        }
+        case 'device_code': {
+            ({ token, expiresIn } = await deviceCodeFlow(p));
+            break;
+        }
+        default:
+            throw new Error(`Unsupported oauth2 grant type: ${p.grant}`);
+    }
+
+    cache.set(key, token, expiresIn);
+    return token;
+}
+
+async function authorizationCodeFlow(p: OAuth2Params): Promise<{ token: string; expiresIn: number }> {
+    // PKCE
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    const state = crypto.randomBytes(16).toString('base64url');
+
+    const redirectUri = `http://localhost:${p.redirectPort}/callback`;
+
+    const authUrl = new URL(p.authUrl!);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('client_id', p.clientId);
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('state', state);
+    authUrl.searchParams.set('code_challenge', challenge);
+    authUrl.searchParams.set('code_challenge_method', 'S256');
+    if (p.scope) { authUrl.searchParams.set('scope', p.scope); }
+
+    return new Promise((resolve, reject) => {
+        const server = http.createServer((req, res) => {
+            const reqUrl = new URL(req.url!, `http://localhost:${p.redirectPort}`);
+            if (reqUrl.pathname !== '/callback') { res.end('Not found'); return; }
+            if (reqUrl.searchParams.get('state') !== state) {
+                res.end('State mismatch'); reject(new Error('oauth2: state mismatch')); return;
+            }
+            const code = reqUrl.searchParams.get('code');
+            if (!code) { res.end('Missing code'); reject(new Error('oauth2: missing code')); return; }
+            res.end('<html><body><h2>Authorization successful — you can close this tab.</h2></body></html>');
+            server.close();
+
+            const params: Record<string, string> = {
+                grant_type: 'authorization_code',
+                code,
+                redirect_uri: redirectUri,
+                client_id: p.clientId,
+                code_verifier: verifier,
+            };
+            if (p.clientSecret) { params['client_secret'] = p.clientSecret; }
+            postToken(p.tokenUrl, params).then(resolve).catch(reject);
+        });
+
+        server.listen(parseInt(p.redirectPort!), () => {
+            vscode.env.openExternal(vscode.Uri.parse(authUrl.toString()));
+            vscode.window.showInformationMessage(`OAuth2: browser opened for authorization. Waiting for callback on port ${p.redirectPort}...`);
+        });
+
+        server.on('error', reject);
+        global.setTimeout(() => { server.close(); reject(new Error('oauth2: timed out waiting for authorization (5 min)')); }, 5 * 60 * 1000);
+    });
+}
+
+async function deviceCodeFlow(p: OAuth2Params): Promise<{ token: string; expiresIn: number }> {
+    const body = new URLSearchParams({ client_id: p.clientId, ...(p.scope ? { scope: p.scope } : {}) }).toString();
+    const dcData = await new Promise<any>((resolve, reject) => {
+        const parsed = new URL(p.deviceUrl!);
+        const lib = parsed.protocol === 'https:' ? https : http;
+        const req = lib.request({
+            method: 'POST',
+            hostname: parsed.hostname,
+            port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+            path: parsed.pathname + parsed.search,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+        }, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); }
+            });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
+
+    const verificationUri = dcData.verification_uri || dcData.verification_url;
+    const userCode = dcData.user_code;
+    let interval = (dcData.interval || 5) * 1000;
+    const expiresIn: number = dcData.expires_in || 300;
+
+    await vscode.window.showInformationMessage(
+        `OAuth2 Device Auth: go to ${verificationUri} and enter code: ${userCode}`,
+        { modal: false },
+        'Open Browser'
+    ).then(sel => { if (sel === 'Open Browser') { vscode.env.openExternal(vscode.Uri.parse(verificationUri)); } });
+
+    const deadline = Date.now() + expiresIn * 1000;
+    while (Date.now() < deadline) {
+        await new Promise(r => global.setTimeout(r, interval));
+        try {
+            const result = await postToken(p.tokenUrl, {
+                grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+                device_code: dcData.device_code,
+                client_id: p.clientId,
+            });
+            return result;
+        } catch (e: any) {
+            if (e.message?.includes('authorization_pending')) { continue; }
+            if (e.message?.includes('slow_down')) { interval += 5000; continue; }
+            throw e;
+        }
+    }
+    throw new Error('oauth2: device code expired');
 }
 
 interface CookieEntry {
@@ -202,8 +454,16 @@ export function activate(context: vscode.ExtensionContext) {
             ? new CookieJar(path.resolve(workspaceRoot, fileConfig.sessionFile))
             : undefined;
 
+        // OAuth2 cache
+        const oauth2CacheFile = fileConfig.oauth2CacheFile
+            ? path.resolve(workspaceRoot, fileConfig.oauth2CacheFile)
+            : undefined;
+        const vsConfig = vscode.workspace.getConfiguration('dot-http');
+        const oauth2CacheFileSetting = vsConfig.get<string>('oauth2CacheFile') || '.tokens.json';
+        const oauth2Cache = new OAuth2Cache(oauth2CacheFile ?? path.resolve(workspaceRoot, oauth2CacheFileSetting));
+
         // Build performer
-        const config = vscode.workspace.getConfiguration('dot-http');
+        const config = vsConfig;
         const timeoutMs = parseTimeout(config.get<string>('timeout') || '');
         const followRedirects = config.get<boolean>('followRedirects') ?? true;
 
@@ -211,7 +471,7 @@ export function activate(context: vscode.ExtensionContext) {
         const assertionResults: { blockName: string; failures: string[] }[] = [];
 
         const performer = (reqText: string, block: RequestBlock) =>
-            performRequest(reqText, { timeoutMs, followRedirects: block.noFollow ? false : followRedirects, cookieJar });
+            performRequest(reqText, { timeoutMs, followRedirects: block.noFollow ? false : followRedirects, cookieJar, oauth2Cache });
 
         try {
             const result = await executeRequestChain(targetBlock, requestBlocks, requestContext, performer, new Set(), assertionResults);
@@ -371,10 +631,13 @@ function parseFileConfig(text: string): FileConfig {
     const config: FileConfig = {};
     const envRegex = /^\s*@env\s*=\s*(.+?)\s*$/m;
     const sessionRegex = /^\s*@session\s*=\s*(.+?)\s*$/m;
+    const oauth2CacheRegex = /^\s*@oauth2-cache\s*=\s*(.+?)\s*$/m;
     const envMatch = text.match(envRegex);
     if (envMatch) { config.envName = envMatch[1]; }
     const sessionMatch = text.match(sessionRegex);
     if (sessionMatch) { config.sessionFile = sessionMatch[1]; }
+    const oauth2CacheMatch = text.match(oauth2CacheRegex);
+    if (oauth2CacheMatch) { config.oauth2CacheFile = oauth2CacheMatch[1]; }
     return config;
 }
 
@@ -453,12 +716,21 @@ function parseDocumentRequests(text: string): RequestBlock[] {
 
 async function performRequest(
     requestText: string,
-    opts: { timeoutMs: number; followRedirects: boolean; cookieJar?: CookieJar }
+    opts: { timeoutMs: number; followRedirects: boolean; cookieJar?: CookieJar; oauth2Cache?: OAuth2Cache }
 ): Promise<ResponseData | null> {
     const parsed = parseRequest(requestText);
     if (!parsed) { throw new Error("Invalid request format"); }
 
     let { method, url, headers, body } = parsed;
+
+    // OAuth2: acquire token and inject Authorization header if not already set
+    const lines = requestText.split(/\r?\n/);
+    const oauthParams = parseOAuth2Params(lines);
+    if (oauthParams && !headers['Authorization'] && !headers['authorization']) {
+        const cache = opts.oauth2Cache ?? new OAuth2Cache();
+        const token = await acquireOAuth2Token(oauthParams, cache);
+        headers['Authorization'] = `Bearer ${token}`;
+    }
 
     // GraphQL: auto-wrap
     const ct = headers['Content-Type'] || headers['content-type'] || '';

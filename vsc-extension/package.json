@@ -60,6 +60,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically follow HTTP redirects."
+        },
+        "dot-http.oauth2CacheFile": {
+          "type": "string",
+          "default": ".tokens.json",
+          "description": "File to cache OAuth2 tokens (relative to workspace root). Used when @oauth2-cache is not set in the .http file."
         }
       }
     }
