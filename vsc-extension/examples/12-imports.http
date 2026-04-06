@@ -1,0 +1,187 @@
+# File Imports
+# Share requests and variables across .http files using @import
+# Imported files make their named requests and variables available
+
+### Example project structure:
+# examples/
+#   12-imports.http          (this file)
+#   auth/
+#     login.http             (defines @name = login)
+#     refresh.http           (defines @name = refreshToken)
+#   api/
+#     users.http             (defines @name = getUser, createUser)
+#     posts.http             (defines @name = getPost)
+
+### Importing a single file
+@import = auth/login.http
+
+# Now you can use requests from auth/login.http
+# @requires = login
+GET https://api.example.com/profile
+
+###
+
+### Importing multiple files
+@import = auth/login.http
+@import = api/users.http
+@import = api/posts.http
+
+# Can now use:
+# @requires = login
+# @requires = getUser
+# @requires = getPost
+# @requires = createUser
+
+###
+
+### Using imported requests
+# auth/login.http contains:
+#   # @name = login
+#   POST https://api.example.com/auth
+#   ...
+
+# This file:
+# @requires = login
+GET https://api.example.com/profile
+
+###
+
+### Chaining imported requests
+# If auth/login.http defines @name = login
+# And api/users.http defines @name = getUser(userId)
+
+# @requires = login
+# @requires = getUser(userId={{login.body.user.id}})
+GET https://api.example.com/posts
+
+###
+
+### Using imported variables
+# If auth/login.http contains:
+#   @baseUrl = https://api.example.com
+#   @version = v1
+#
+# You can use those variables in this file:
+GET {{baseUrl}}/{{version}}/users
+
+###
+
+### Nested imports (recursive)
+# If auth/login.http also has @import = helpers.http
+# Then helpers.http requests are available to you too
+# (But you should import the files you directly need)
+
+@import = auth/login.http
+# If auth/login.http imports helpers.http,
+# you get helpers.http requests indirectly
+
+###
+
+### Cyclic import detection
+# If auth/login.http imports this file, and
+# This file imports auth/login.http
+# (creates a cycle)
+#
+# The tool detects this and safely skips the duplicate
+# No infinite loop, no error—just safe handling
+
+###
+
+### Example auth/login.http:
+# File: examples/auth/login.http
+#
+# @baseUrl = https://api.example.com
+# @version = v1
+#
+# ###
+# # @name = login
+# POST {{baseUrl}}/{{version}}/auth
+# Content-Type: application/json
+#
+# {
+#   "username": "user@example.com",
+#   "password": "password123"
+# }
+#
+# ###
+# # @name = logout
+# # @requires = login
+# POST {{baseUrl}}/{{version}}/auth/logout
+
+###
+
+### Example api/users.http:
+# File: examples/api/users.http
+#
+# @baseUrl = https://api.example.com
+#
+# ###
+# # @name = getUser
+# GET {{baseUrl}}/users/{{userId}}
+#
+# ###
+# # @name = createUser
+# POST {{baseUrl}}/users
+# Content-Type: application/json
+#
+# {
+#   "name": "{{name}}",
+#   "email": "{{email}}"
+# }
+
+###
+
+### Import paths are relative to the importing file
+# If this file is at: examples/12-imports.http
+# And you import: @import = auth/login.http
+# It resolves to: examples/auth/login.http
+
+# If you import: @import = ../README.md
+# It resolves to: ../README.md (one level up)
+
+###
+
+### Best practices
+# 1. Organize by concern: auth.http, users.http, posts.http
+# 2. Use meaningful @name values (e.g. @name = loginUser, @name = getUserById)
+# 3. Define common variables in each imported file (@baseUrl, @version)
+# 4. Keep imports simple—import only what you need
+# 5. Avoid circular imports (tool handles them, but it's cleaner without)
+
+###
+
+### Combined example: login, create user, verify user
+@import = auth/login.http
+@import = api/users.http
+
+###
+
+# Step 1: Login
+# @name = auth
+POST https://api.example.com/auth
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "admin123"
+}
+
+###
+
+# Step 2: Create user (using auth token)
+# @requires = auth
+POST https://api.example.com/users
+Authorization: Bearer {{auth.body.token}}
+Content-Type: application/json
+
+{
+  "name": "John Doe",
+  "email": "john@example.com"
+}
+
+###
+
+# Step 3: Fetch user (using auth token)
+# @requires = auth
+GET https://api.example.com/users/1
+Authorization: Bearer {{auth.body.token}}

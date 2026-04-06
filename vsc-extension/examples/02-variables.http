@@ -1,0 +1,51 @@
+# Variables
+# Demonstrates file variables, environment variables, and variable substitution
+
+### File variables (local to this file)
+@baseUrl = https://jsonplaceholder.typicode.com
+@postId = 1
+@timeout = 30s
+
+###
+
+### Using file variables
+GET {{baseUrl}}/posts/{{postId}}
+
+###
+
+### Multiple file variables
+@userId = 5
+@limit = 10
+
+GET {{baseUrl}}/posts?userId={{userId}}&_limit={{limit}}
+
+###
+
+### System/environment variables
+# These can be set in your OS environment or in a .env file
+# Use {{VAR}} or {{$env VAR}} syntax — both work the same
+
+GET {{baseUrl}}/users/{{$env USERNAME}}
+
+###
+
+### Mixed variables: file + environment + expression
+@version = v1
+
+GET {{baseUrl}}/{{version}}/posts/{{postId}}
+
+###
+
+### Note about variable precedence (highest to lowest):
+# 1. System environment variables
+# 2. .env file (if present)
+# 3. File variables (@var = value)
+
+# Example with .env file:
+# If your workspace has a .env file with:
+#   API_KEY=secret123
+#   API_URL=https://api.example.com
+#
+# You can use:
+# Authorization: Bearer {{API_KEY}}
+# GET {{API_URL}}/resource

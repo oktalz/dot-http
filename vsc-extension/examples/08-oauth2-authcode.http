@@ -1,0 +1,114 @@
+# OAuth2: Authorization Code + PKCE Flow
+# User authentication (opens browser for login, captures callback locally)
+# PKCE (Proof Key for Code Exchange) is automatically handled
+
+@baseUrl = https://api.example.com
+@oauth2-cache = .tokens.json
+
+###
+
+### Authorization Code Flow with PKCE (browser popup)
+# When you run this request:
+# 1. A browser window opens to the authorization URL
+# 2. You log in and authorize the application
+# 3. You're redirected to a local callback server
+# 4. The code is captured and exchanged for a token
+# 5. Token is cached and injected as: Authorization: Bearer <token>
+
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = openid profile email
+GET {{baseUrl}}/user/profile
+
+###
+
+### With custom redirect port
+# The callback server listens on localhost:9876 by default
+# You can specify a different port with @oauth2-redirect-port
+# Make sure this port is registered in your OAuth2 app as a redirect URI
+
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = my-client-id
+# @oauth2-scope = read write
+# @oauth2-redirect-port = 8080
+GET {{baseUrl}}/protected
+
+###
+
+### Multiple scopes
+# Scopes are space-separated
+
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = openid profile email offline_access
+GET {{baseUrl}}/user/preferences
+
+###
+
+### POST request with Authorization Code
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = my-client
+# @oauth2-scope = read write
+POST {{baseUrl}}/user/update
+Content-Type: application/json
+
+{
+  "name": "New Name",
+  "email": "newemail@example.com"
+}
+
+###
+
+### Using environment variables
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = {{$env OAUTH2_TOKEN_URL}}
+# @oauth2-auth-url = {{$env OAUTH2_AUTH_URL}}
+# @oauth2-client-id = {{$env OAUTH2_CLIENT_ID}}
+# @oauth2-scope = read write
+GET {{baseUrl}}/data
+
+###
+
+### Token reuse and refresh
+# Tokens are cached in .tokens.json with:
+# - Cache key: grant::tokenURL::clientID::scope
+# - When you run a second request with the same parameters,
+#   the cached token is reused (if not expired)
+# - Tokens are checked for expiry with a 30-second buffer
+#   (refreshes 30 seconds before actual expiry)
+
+# First request - browser opens, user logs in
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = my-client
+# @oauth2-scope = openid profile
+GET {{baseUrl}}/data/1
+
+###
+
+# Second request - uses cached token (no browser popup)
+# @oauth2-grant = authorization_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-auth-url = https://auth.example.com/oauth/authorize
+# @oauth2-client-id = my-client
+# @oauth2-scope = openid profile
+GET {{baseUrl}}/data/2
+
+###
+
+### PKCE details (automatic, you don't need to do anything)
+# PKCE (RFC 7636) is automatically implemented:
+# - Code challenge is generated from a random code verifier
+# - Challenge is sent to authorization endpoint
+# - Verifier is sent during token exchange
+# - Protects against authorization code interception attacks
+# - Enabled by default, no configuration needed

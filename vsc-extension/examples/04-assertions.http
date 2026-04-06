@@ -1,0 +1,103 @@
+# Assertions
+# Use @expect to check status codes and @assert for body/header validation
+# Results are shown in the response panel
+
+@baseUrl = https://jsonplaceholder.typicode.com
+
+###
+
+### Assert status code
+# @name = getPost
+# @expect 200
+GET {{baseUrl}}/posts/1
+
+###
+
+### Assert status code and body values
+# @name = createPost
+# @expect 201
+# @assert body.title == Test
+POST {{baseUrl}}/posts
+Content-Type: application/json
+
+{
+  "title": "Test",
+  "body": "Test body",
+  "userId": 1
+}
+
+###
+
+### Multiple assertions
+# @name = testUser
+# @expect 200
+# @assert body.id == 1
+# @assert body.username contains john
+# @assert header.Content-Type contains application/json
+GET {{baseUrl}}/users/1
+
+###
+
+### Assertion operators
+# Supported operators: ==, !=, contains, !contains
+
+# @name = assertOperators
+# @expect 200
+# @assert body.name == John Doe
+# @assert body.name != Jane Doe
+# @assert body.email contains @example.com
+# @assert body.phone !contains 555
+GET {{baseUrl}}/users/1
+
+###
+
+### Assert nested body fields (dot notation)
+# If response has: { data: { user: { email: "test@example.com" } } }
+# @assert body.data.user.email == test@example.com
+
+# @name = nestedAssertion
+# @expect 200
+# @assert body.id == 1
+# @assert body.username == Bret
+POST {{baseUrl}}/posts
+Content-Type: application/json
+
+{"title": "Test", "body": "Body", "userId": 1}
+
+###
+
+### Assert response headers
+# @name = headerAssertion
+# @expect 200
+# @assert header.Content-Type contains application/json
+# @assert header.Server contains cloudflare
+GET {{baseUrl}}/users
+
+###
+
+### Assertion on status code after redirect
+# @expect 200
+# @assert body.id == 1
+GET {{baseUrl}}/posts/1
+
+###
+
+### Combined: chaining + assertions
+# @name = fetchUser
+# @expect 200
+# @assert body.id == 1
+GET {{baseUrl}}/users/1
+
+###
+
+# @requires = fetchUser
+# @expect 201
+# @assert body.userId == {{fetchUser.body.id}}
+POST {{baseUrl}}/posts
+Content-Type: application/json
+
+{
+  "title": "Post by user",
+  "body": "Body",
+  "userId": {{fetchUser.body.id}}
+}

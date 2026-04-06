@@ -1,0 +1,67 @@
+# Cookie Sessions
+# Persist cookies across requests using @session directive
+# Saves/loads cookies from a JSON file (domain-aware)
+
+### Set session file at file level
+@session = session.json
+@baseUrl = https://jsonplaceholder.typicode.com
+
+###
+
+### Login request (sets cookies)
+# @name = login
+POST https://api.example.com/auth
+Content-Type: application/json
+
+{
+  "username": "user@example.com",
+  "password": "password123"
+}
+
+###
+
+### Subsequent request automatically includes cookies
+# Cookies from the login above are automatically sent
+# @requires = login
+GET https://api.example.com/profile
+
+###
+
+### Another request using the session
+# Cookies are persisted between requests
+GET https://api.example.com/settings
+
+###
+
+### Logout (clears session)
+# @requires = login
+POST https://api.example.com/logout
+
+###
+
+### After logout, session is cleared
+GET https://api.example.com/profile
+
+###
+
+### Multi-domain sessions
+# If you make requests to different domains, cookies are stored per-domain
+# @name = githubLogin
+POST https://github.com/login
+Content-Type: application/json
+
+{
+  "login": "user",
+  "password": "pass"
+}
+
+###
+
+# This request to github.com will include github cookies
+# @requires = githubLogin
+GET https://github.com/user/repos
+
+###
+
+# This request to api.example.com uses its own cookies (different domain)
+GET https://api.example.com/data

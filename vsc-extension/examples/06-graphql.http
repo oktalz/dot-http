@@ -1,0 +1,131 @@
+# GraphQL
+# Set Content-Type: application/graphql and query is auto-wrapped as JSON
+
+@baseUrl = https://api.example.com/graphql
+
+###
+
+### Simple GraphQL query
+POST {{baseUrl}}
+Content-Type: application/graphql
+
+{
+  users {
+    id
+    name
+    email
+  }
+}
+
+###
+
+### GraphQL query with arguments
+POST {{baseUrl}}
+Content-Type: application/graphql
+
+{
+  user(id: 1) {
+    id
+    name
+    email
+    posts {
+      id
+      title
+    }
+  }
+}
+
+###
+
+### GraphQL mutation
+POST {{baseUrl}}
+Content-Type: application/graphql
+
+{
+  createUser(name: "John", email: "john@example.com") {
+    id
+    name
+    email
+  }
+}
+
+###
+
+### GraphQL with variables (using dot-http variable substitution)
+@userId = 1
+
+POST {{baseUrl}}
+Content-Type: application/graphql
+
+{
+  user(id: {{userId}}) {
+    id
+    name
+    email
+    createdAt
+  }
+}
+
+###
+
+### Named GraphQL request for chaining
+# @name = fetchUsers
+POST {{baseUrl}}
+Content-Type: application/graphql
+
+{
+  users(limit: 10) {
+    id
+    name
+  }
+}
+
+###
+
+### Use GraphQL response in subsequent request
+# @requires = fetchUsers
+POST {{baseUrl}}
+Content-Type: application/graphql
+
+{
+  userDetails {
+    id: {{fetchUsers.body.data.users[0].id}}
+    name
+    email
+  }
+}
+
+###
+
+### GraphQL with assertions
+# @expect 200
+# @assert body.data.users != null
+# @assert header.Content-Type contains application/json
+POST {{baseUrl}}
+Content-Type: application/graphql
+
+{
+  users {
+    id
+    name
+  }
+}
+
+###
+
+### What happens internally:
+# When you set Content-Type: application/graphql, your request:
+#
+# POST /graphql
+# Content-Type: application/graphql
+#
+# {
+#   users { id name }
+# }
+#
+# Gets converted to:
+#
+# POST /graphql
+# Content-Type: application/json
+#
+# {"query": "{ users { id name } }"}

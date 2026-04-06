@@ -1,0 +1,105 @@
+# OAuth2: Device Code Flow
+# For devices without a browser or for testing
+# Shows a verification URL and user code; user authorizes on a different device
+
+@baseUrl = https://api.example.com
+@oauth2-cache = .tokens.json
+
+###
+
+### Device Code Flow (polling)
+# When you run this request:
+# 1. A notification shows a verification URL and user code
+# 2. You open that URL on another device (phone, computer)
+# 3. Enter the user code and authorize
+# 4. The client polls the token endpoint until approved
+# 5. Token is cached and injected as: Authorization: Bearer <token>
+
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-device-url = https://auth.example.com/oauth/device/code
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = read
+GET {{baseUrl}}/resource
+
+###
+
+### Device Code for broader scopes
+# Multiple scopes separated by space
+
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-device-url = https://auth.example.com/oauth/device/code
+# @oauth2-client-id = my-device-client
+# @oauth2-scope = read write offline_access
+GET {{baseUrl}}/protected
+
+###
+
+### POST with Device Code
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-device-url = https://auth.example.com/oauth/device/code
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-scope = read write
+POST {{baseUrl}}/config
+Content-Type: application/json
+
+{
+  "setting": "value"
+}
+
+###
+
+### Using environment variables
+# @oauth2-grant = device_code
+# @oauth2-token-url = {{$env OAUTH2_TOKEN_URL}}
+# @oauth2-device-url = {{$env OAUTH2_DEVICE_URL}}
+# @oauth2-client-id = {{$env OAUTH2_CLIENT_ID}}
+# @oauth2-scope = read
+GET {{baseUrl}}/data
+
+###
+
+### Token reuse
+# Tokens are cached with:
+# - Cache key: grant::tokenURL::clientID::scope
+# - Subsequent requests with the same parameters reuse the cached token
+# - No user action needed on second request (unless token expired)
+
+# First request - shows notification with code
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-device-url = https://auth.example.com/oauth/device/code
+# @oauth2-client-id = my-client
+# @oauth2-scope = openid profile
+GET {{baseUrl}}/data/1
+
+###
+
+# Second request - uses cached token (no notification)
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-device-url = https://auth.example.com/oauth/device/code
+# @oauth2-client-id = my-client
+# @oauth2-scope = openid profile
+GET {{baseUrl}}/data/2
+
+###
+
+### Use case: CLI tools, embedded devices, or testing
+# Device Code Flow is useful when:
+# - The device can't open a browser (embedded system, CLI tool)
+# - User prefers to authorize on a different device
+# - You're testing and don't want browser popups
+# - Multi-device setups where one device is headless
+
+### Notification behavior (VS Code extension)
+# A notification popup shows:
+#   "Authorization required for example.com"
+#   "URL: https://auth.example.com/device?code=ABC123"
+#   "Enter user code: ABC123"
+#   [Open Browser] [Dismiss]
+#
+# Polling continues automatically in the background
+# Token is injected once authorized by user on the other device

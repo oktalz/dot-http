@@ -1,0 +1,149 @@
+# Special Features: Redirects, Timeouts, and No-Follow
+
+@baseUrl = https://api.example.com
+
+###
+
+### Default: Follow redirects
+# By default, the extension follows HTTP redirects (301, 302, 303, 307, 308)
+# Final response body and status is from the redirect target
+
+GET https://example.com/old-endpoint
+
+###
+
+### Disable redirect following for this request
+# Use # @no-follow to opt out of following redirects
+# Response will have the redirect status (301/302) and Location header
+
+# @no-follow
+GET https://example.com/redirect-me
+
+###
+
+### Check response headers to follow manually
+# If you disable follow, you can see:
+#   Status: 301 Moved Permanently
+#   Location: https://example.com/new-endpoint
+# Then manually create a request to the new endpoint
+
+# @no-follow
+GET https://example.com/check-redirect
+
+###
+
+### Setting timeout (in VS Code settings)
+# Configure in VS Code settings → Extensions → Http Client:
+# dot-http.timeout: "30s"
+#
+# Supports: ms (milliseconds), s (seconds), m (minutes)
+# Examples: "500ms", "30s", "5m"
+# Empty or unset = no timeout
+
+GET {{baseUrl}}/slow-endpoint
+
+###
+
+### Long-running request with timeout
+# With timeout set to "30s" in settings:
+# If this request takes longer than 30 seconds, it will be cancelled
+
+# @expect 200
+POST {{baseUrl}}/process-large-file
+Content-Type: application/json
+
+{
+  "action": "process_all",
+  "timeout_seconds": 25
+}
+
+###
+
+### Very fast request with timeout
+# Finishes before timeout, no issue
+
+# @expect 200
+GET {{baseUrl}}/health
+
+###
+
+### Request without timeout (empty setting)
+# If dot-http.timeout is empty, requests wait indefinitely
+
+GET {{baseUrl}}/long-running-operation
+
+###
+
+### Status code validation with redirects
+# Assertion on final status after following redirects
+
+# @expect 200
+# @assert body.data != null
+GET https://example.com/will-redirect-to-200
+
+###
+
+### Redirect to error page
+# @no-follow
+# @expect 301
+GET https://example.com/redirect-to-404
+
+###
+
+### Combined: timeout + redirect + assertion
+# @expect 200
+# @assert body.success == true
+# Request follows redirects automatically
+# Must complete within timeout window
+
+GET {{baseUrl}}/endpoint-that-redirects
+
+###
+
+### HTTP Status Codes and Redirects
+# 301 Moved Permanently     — old URL no longer exists (cached redirect)
+# 302 Found                 — temporary redirect
+# 303 See Other             — redirect with GET (even if original was POST)
+# 307 Temporary Redirect    — same method, not cached
+# 308 Permanent Redirect    — same method, cached
+
+# By default: all redirects followed automatically
+# With @no-follow: stop and show redirect response
+
+###
+
+### Timeout during redirect chain
+# If first request redirects to second URL,
+# and timeout fires during the chain,
+# you'll see a timeout error
+
+# @expect 200
+GET https://example.com/multi-redirect
+
+###
+
+### No-follow useful for:
+# 1. Testing redirect behavior
+# 2. Checking Location header values
+# 3. Debugging redirect chains
+# 4. Security testing (ensure redirect goes to safe URL)
+# 5. API contracts (some APIs require following redirects yourself)
+
+###
+
+### Timeout useful for:
+# 1. Setting SLA boundaries (API must respond in 30s)
+# 2. Preventing hung requests in CI/CD
+# 3. Load testing (measure time-to-first-byte)
+# 4. Testing timeout handling in client code
+
+###
+
+### Configuration precedence:
+# 1. @no-follow in request (highest)
+# 2. dot-http.followRedirects in settings (default: true)
+# 3. HTTP client follow default (true)
+
+# 1. Request-level timeout (future feature)
+# 2. dot-http.timeout setting
+# 3. No timeout (infinite)

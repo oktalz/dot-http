@@ -1,0 +1,50 @@
+# Basic HTTP Requests
+# Demonstrates simple GET, POST, and other HTTP methods
+
+### Simple GET request
+GET https://jsonplaceholder.typicode.com/posts/1
+
+###
+
+### POST with JSON body
+POST https://jsonplaceholder.typicode.com/posts
+Content-Type: application/json
+
+{
+  "title": "Hello World",
+  "body": "This is a test post",
+  "userId": 1
+}
+
+###
+
+### PUT request
+PUT https://jsonplaceholder.typicode.com/posts/1
+Content-Type: application/json
+
+{
+  "id": 1,
+  "title": "Updated Title",
+  "body": "Updated body",
+  "userId": 1
+}
+
+###
+
+### DELETE request
+DELETE https://jsonplaceholder.typicode.com/posts/1
+
+###
+
+### HEAD request (no response body)
+HEAD https://jsonplaceholder.typicode.com/posts
+
+###
+
+### PATCH request
+PATCH https://jsonplaceholder.typicode.com/posts/1
+Content-Type: application/json
+
+{
+  "title": "Patched Title"
+}

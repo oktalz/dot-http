@@ -1,0 +1,77 @@
+# Request Chaining
+# Use response data from one request in subsequent requests
+# @name identifies a request, @requires declares dependencies
+
+@baseUrl = https://jsonplaceholder.typicode.com
+
+###
+
+### Step 1: Get a user (named request)
+# @name = getUser
+GET {{baseUrl}}/users/1
+
+###
+
+### Step 2: Use data from the previous response
+# @requires = getUser
+# Available response fields:
+#   {{getUser.body.field}}  — JSON body field (dot notation for nested)
+#   {{getUser.headers.Content-Type}} — response header
+
+POST {{baseUrl}}/posts
+Content-Type: application/json
+
+{
+  "title": "New Post from User",
+  "body": "Posted by {{getUser.body.name}}",
+  "userId": {{getUser.body.id}}
+}
+
+###
+
+### Step 3: Chain multiple dependencies
+# @name = createPost
+# @requires = getUser
+POST {{baseUrl}}/posts
+Content-Type: application/json
+
+{
+  "title": "Another post",
+  "body": "User {{getUser.body.name}} created this",
+  "userId": {{getUser.body.id}}
+}
+
+###
+
+### Step 4: Use multiple previous requests
+# @requires = getUser
+# @requires = createPost
+GET {{baseUrl}}/posts?userId={{getUser.body.id}}&_limit=5
+
+###
+
+### Parameterized dependencies (reuse same request with different params)
+# @name = getUserById
+GET {{baseUrl}}/users/{{id}}
+
+###
+
+### Use parameterized request twice
+# @requires = getUserById(id=1)
+# @requires = getUserById(id=2)
+GET {{baseUrl}}/compare
+
+###
+
+### Nested field access (dot notation)
+# If response is: { user: { profile: { email: "test@example.com" } } }
+# Access with: {{getUser.body.user.profile.email}}
+
+# @name = complexResponse
+GET {{baseUrl}}/users/1
+
+###
+
+# @requires = complexResponse
+# This would access nested data (if it existed):
+# POST /api/notify?email={{complexResponse.body.user.profile.email}}

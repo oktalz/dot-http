@@ -1,0 +1,267 @@
+# Advanced: Full-Featured Example
+# Combines multiple features: OAuth2, chaining, assertions, sessions, variables, etc.
+
+### Setup: Multi-environment with OAuth2 caching
+@env = dev
+@session = session.json
+@oauth2-cache = .tokens.json
+
+### Base URLs and credentials
+@apiUrl = https://api.dev.example.com
+@version = v2
+@appName = MyApp
+
+###
+
+### Step 1: Authenticate with OAuth2 (client credentials)
+# Acquires a token automatically and caches it
+# @name = authenticate
+# @oauth2-grant = client_credentials
+# @oauth2-token-url = https://auth.dev.example.com/oauth/token
+# @oauth2-client-id = {{$env OAUTH2_CLIENT_ID}}
+# @oauth2-client-secret = {{$env OAUTH2_CLIENT_SECRET}}
+# @oauth2-scope = api
+# @expect 200
+# @assert body.access_token != null
+POST https://auth.dev.example.com/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id={{$env OAUTH2_CLIENT_ID}}&client_secret={{$env OAUTH2_CLIENT_SECRET}}&scope=api
+
+###
+
+### Step 2: Fetch user data
+# @name = currentUser
+# @requires = authenticate
+# @expect 200
+# @assert body.id != null
+# @assert body.email contains @example.com
+GET {{apiUrl}}/{{version}}/user
+Authorization: Bearer {{authenticate.body.access_token}}
+
+###
+
+### Step 3: Fetch user's settings (uses previous responses)
+# @name = userSettings
+# @requires = authenticate
+# @requires = currentUser
+# @expect 200
+GET {{apiUrl}}/{{version}}/users/{{currentUser.body.id}}/settings
+Authorization: Bearer {{authenticate.body.access_token}}
+
+###
+
+### Step 4: Update user settings
+# @name = updateSettings
+# @requires = authenticate
+# @requires = currentUser
+# @expect 200
+# @assert body.updated_at != null
+PUT {{apiUrl}}/{{version}}/users/{{currentUser.body.id}}/settings
+Authorization: Bearer {{authenticate.body.access_token}}
+Content-Type: application/json
+
+{
+  "theme": "dark",
+  "notifications": true,
+  "language": "en",
+  "timezone": "UTC"
+}
+
+###
+
+### Step 5: Create a new resource
+# @name = createPost
+# @requires = authenticate
+# @requires = currentUser
+# @expect 201
+# @assert body.id != null
+# @assert body.userId == {{currentUser.body.id}}
+POST {{apiUrl}}/{{version}}/posts
+Authorization: Bearer {{authenticate.body.access_token}}
+Content-Type: application/json
+
+{
+  "title": "Automated API Test",
+  "content": "This post was created by {{appName}}",
+  "userId": {{currentUser.body.id}},
+  "tags": ["automated", "test"]
+}
+
+###
+
+### Step 6: Fetch the created resource
+# @requires = authenticate
+# @requires = createPost
+# @expect 200
+# @assert body.id == {{createPost.body.id}}
+# @assert body.title == Automated API Test
+GET {{apiUrl}}/{{version}}/posts/{{createPost.body.id}}
+Authorization: Bearer {{authenticate.body.access_token}}
+
+###
+
+### Step 7: List resources with pagination
+# @requires = authenticate
+# @expect 200
+# @assert body.items != null
+# @assert body.total >= 0
+GET {{apiUrl}}/{{version}}/posts?page=1&limit=10&userId={{$env USER_ID}}
+Authorization: Bearer {{authenticate.body.access_token}}
+
+###
+
+### Step 8: GraphQL query combining REST and GraphQL
+# @requires = authenticate
+# @expect 200
+POST {{apiUrl}}/{{version}}/graphql
+Authorization: Bearer {{authenticate.body.access_token}}
+Content-Type: application/graphql
+
+{
+  userPosts(userId: {{$env USER_ID}}, limit: 5) {
+    id
+    title
+    createdAt
+    author {
+      name
+      email
+    }
+  }
+}
+
+###
+
+### Step 9: Delete the created resource
+# @requires = authenticate
+# @requires = createPost
+# @expect 204
+DELETE {{apiUrl}}/{{version}}/posts/{{createPost.body.id}}
+Authorization: Bearer {{authenticate.body.access_token}}
+
+###
+
+### Step 10: Verify deletion (expect 404)
+# @requires = authenticate
+# @requires = createPost
+# @expect 404
+GET {{apiUrl}}/{{version}}/posts/{{createPost.body.id}}
+Authorization: Bearer {{authenticate.body.access_token}}
+
+###
+
+### Step 11: Batch operation with multiple dependent requests
+# @requires = authenticate
+# @name = batchOperation
+# @expect 200
+# @assert body.results != null
+POST {{apiUrl}}/{{version}}/batch
+Authorization: Bearer {{authenticate.body.access_token}}
+Content-Type: application/json
+
+{
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/users/{{$env USER_ID}}"
+    },
+    {
+      "method": "POST",
+      "path": "/posts",
+      "body": {
+        "title": "Batch Post",
+        "userId": {{$env USER_ID}}
+      }
+    }
+  ]
+}
+
+###
+
+### Step 12: File upload with metadata and auth
+# @requires = authenticate
+# @expect 200
+# @assert body.fileId != null
+POST {{apiUrl}}/{{version}}/uploads
+Authorization: Bearer {{authenticate.body.access_token}}
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="title"
+
+User Avatar
+------FormBoundary
+Content-Disposition: form-data; name="description"
+
+Profile picture for {{currentUser.body.name}}
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="avatar.jpg"
+Content-Type: image/jpeg
+
+< ./avatar.jpg
+------FormBoundary--
+
+###
+
+### Step 13: Session-based request (cookies persist)
+# This assumes previous requests set cookies via Set-Cookie
+# Cookies are automatically included in subsequent requests
+GET {{apiUrl}}/{{version}}/user/session
+Authorization: Bearer {{authenticate.body.access_token}}
+
+###
+
+### Step 14: Device Code Flow for interactive auth (alternative)
+# Use this instead of Step 1 if you prefer device code flow
+# (Shows device code instead of using client credentials)
+
+# @name = deviceAuth
+# @oauth2-grant = device_code
+# @oauth2-token-url = https://auth.dev.example.com/oauth/token
+# @oauth2-device-url = https://auth.dev.example.com/oauth/device/code
+# @oauth2-client-id = {{$env OAUTH2_CLIENT_ID}}
+# @oauth2-scope = read write
+# @expect 200
+POST https://auth.dev.example.com/oauth/device/code
+
+###
+
+### Notes
+# This example demonstrates:
+# 1. OAuth2 client credentials for authentication
+# 2. Request chaining with complex dependencies
+# 3. Variable substitution (file vars, env vars, response data)
+# 4. Assertions for multiple response fields
+# 5. Different HTTP methods (GET, POST, PUT, DELETE)
+# 6. JSON and GraphQL content types
+# 7. Multipart file uploads
+# 8. Session/cookie persistence
+# 9. Status code expectations
+# 10. Nested data access via dot notation
+#
+# Real-world use cases:
+# - Integration testing
+# - API documentation/examples
+# - Load testing prep (generate valid requests)
+# - CI/CD pipeline validation
+# - Manual API exploration with saved workflows
+
+###
+
+### To use this file:
+# 1. Create a .env file with:
+#    OAUTH2_CLIENT_ID=your-client-id
+#    OAUTH2_CLIENT_SECRET=your-client-secret
+#    USER_ID=123
+#
+# 2. Adjust @env and @apiUrl for your environment (dev/staging/prod)
+#
+# 3. In VS Code:
+#    - Run Step 1 (Authenticate) to get token
+#    - Run any subsequent step—dependencies are auto-executed
+#    - View results in the response panel
+#
+# 4. Or from CLI:
+#    dot-http --env dev advanced-example.http authenticate
+#    dot-http --env dev advanced-example.http currentUser
+#    dot-http --env prod advanced-example.http (runs last request)

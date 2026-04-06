@@ -1,0 +1,143 @@
+# File Uploads: Multipart/Form-Data
+# Send files and form fields with multipart encoding
+
+@baseUrl = https://api.example.com
+@boundary = ----WebKitFormBoundary
+
+###
+
+### Simple file upload
+POST {{baseUrl}}/upload
+Content-Type: multipart/form-data; boundary={{boundary}}
+
+----WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="document.pdf"
+Content-Type: application/pdf
+
+< ./document.pdf
+----WebKitFormBoundary--
+
+###
+
+### Multiple files
+POST {{baseUrl}}/batch-upload
+Content-Type: multipart/form-data; boundary={{boundary}}
+
+----WebKitFormBoundary
+Content-Disposition: form-data; name="files"; filename="file1.txt"
+Content-Type: text/plain
+
+< ./file1.txt
+----WebKitFormBoundary
+Content-Disposition: form-data; name="files"; filename="file2.txt"
+Content-Type: text/plain
+
+< ./file2.txt
+----WebKitFormBoundary--
+
+###
+
+### File with additional form fields
+POST {{baseUrl}}/upload-with-metadata
+Content-Type: multipart/form-data; boundary={{boundary}}
+
+----WebKitFormBoundary
+Content-Disposition: form-data; name="name"
+
+John Doe
+----WebKitFormBoundary
+Content-Disposition: form-data; name="email"
+
+john@example.com
+----WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="resume.pdf"
+Content-Type: application/pdf
+
+< ./resume.pdf
+----WebKitFormBoundary--
+
+###
+
+### Image upload with description
+POST {{baseUrl}}/images/upload
+Content-Type: multipart/form-data; boundary=----Boundary123
+
+------Boundary123
+Content-Disposition: form-data; name="title"
+
+My Photo
+------Boundary123
+Content-Disposition: form-data; name="description"
+
+A beautiful landscape photo
+------Boundary123
+Content-Disposition: form-data; name="tags"
+
+nature, sunset, landscape
+------Boundary123
+Content-Disposition: form-data; name="photo"; filename="photo.jpg"
+Content-Type: image/jpeg
+
+< ./photo.jpg
+------Boundary123--
+
+###
+
+### File from relative path
+POST {{baseUrl}}/documents/upload
+Content-Type: multipart/form-data; boundary=----WebKitBoundary
+
+----WebKitBoundary
+Content-Disposition: form-data; name="document"; filename="README.md"
+Content-Type: text/markdown
+
+< ../README.md
+----WebKitBoundary--
+
+###
+
+### CSV file upload
+POST {{baseUrl}}/import/csv
+Content-Type: multipart/form-data; boundary=----WebKitBoundary
+
+----WebKitBoundary
+Content-Disposition: form-data; name="type"
+
+users
+----WebKitBoundary
+Content-Disposition: form-data; name="file"; filename="users.csv"
+Content-Type: text/csv
+
+< ./users.csv
+----WebKitBoundary--
+
+###
+
+### File upload with OAuth2
+# Combine file upload with OAuth2 authentication
+
+# @oauth2-grant = client_credentials
+# @oauth2-token-url = https://auth.example.com/oauth/token
+# @oauth2-client-id = {{CLIENT_ID}}
+# @oauth2-client-secret = {{CLIENT_SECRET}}
+# @oauth2-scope = write
+POST {{baseUrl}}/protected/upload
+Content-Type: multipart/form-data; boundary=----WebKitBoundary
+
+----WebKitBoundary
+Content-Disposition: form-data; name="file"; filename="data.json"
+Content-Type: application/json
+
+< ./data.json
+----WebKitBoundary--
+
+###
+
+### Notes on file uploads:
+# 1. Path is relative to the .http file location
+# 2. Boundary can be any string (must match in Content-Type header)
+# 3. Use same boundary throughout the body
+# 4. Each field must start with --boundary
+# 5. File content is inserted with: < ./path/to/file
+# 6. Last boundary should end with -- (--boundary--)
+# 7. Each line must end with CRLF (carriage return + line feed)

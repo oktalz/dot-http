@@ -1,0 +1,129 @@
+# Multiple Environments
+# Switch between development, staging, and production without changing code
+# Uses @env directive to load named .env files
+
+### Example setup:
+# Your workspace should have .env files:
+#   .env           (default)
+#   dev.env
+#   staging.env
+#   prod.env
+#
+# Each file defines environment variables like:
+#   API_URL=https://api.dev.example.com
+#   API_KEY=dev-key-123
+#   DATABASE_URL=postgres://localhost/dev_db
+
+### Default environment (.env file)
+# No @env directive = loads .env file automatically
+@baseUrl = https://api.example.com
+
+###
+
+GET {{baseUrl}}/users
+
+###
+
+### Development environment (dev.env)
+# Change the comment to switch to dev environment
+# @env = dev
+
+# This loads dev.env instead of .env
+# With @env = dev, variables come from:
+# 1. System environment variables (highest priority)
+# 2. dev.env file
+# 3. File variables like @baseUrl above
+
+###
+
+GET https://api.dev.example.com/users
+
+###
+
+### Staging environment (staging.env)
+# Uncomment to use staging
+# @env = staging
+
+###
+
+GET https://api.staging.example.com/users
+
+###
+
+### Production environment (prod.env)
+# Uncomment to use production (BE CAREFUL!)
+# @env = prod
+
+###
+
+GET https://api.prod.example.com/users
+
+###
+
+### Using environment variables from files
+@env = dev
+
+# If dev.env contains:
+#   API_URL=https://api.dev.example.com
+#   API_KEY=dev-key-123
+#
+# You can use them like this:
+
+GET {{API_URL}}/users
+Authorization: Bearer {{API_KEY}}
+
+###
+
+### Switching environments per request
+# You can't change @env mid-file, but you can:
+# 1. Create separate files (api-dev.http, api-prod.http)
+# 2. Or create separate example files with different @env
+
+# Example: create api.http with @env = dev
+# Then when running from CLI: dot-http --env prod api.http
+# This overrides the @env directive in the file
+
+###
+
+### Variable precedence with @env
+# Highest to lowest:
+# 1. System environment variables (set in OS)
+# 2. Named .env file (dev.env, prod.env, etc. if @env specified)
+# 3. Default .env file (if no @env or system/override doesn't define var)
+# 4. File variables (@var = value)
+
+# Example: if both .env and dev.env define API_KEY
+# And you use @env = dev
+# Then dev.env's API_KEY is used (it's in a named file)
+
+###
+
+### Recommended .env file structure:
+
+# .env (default/development)
+# API_URL=http://localhost:3000
+# API_KEY=dev-key-insecure
+# DATABASE_URL=postgres://localhost/dev_db
+
+# dev.env
+# API_URL=https://api.dev.example.com
+# API_KEY=dev-key-123
+# DATABASE_URL=postgres://dev.example.com/dev_db
+
+# staging.env
+# API_URL=https://api.staging.example.com
+# API_KEY=staging-key-456
+# DATABASE_URL=postgres://staging.example.com/staging_db
+
+# prod.env (NEVER commit this to version control!)
+# API_URL=https://api.example.com
+# API_KEY=prod-key-789
+# DATABASE_URL=postgres://prod.example.com/prod_db
+
+###
+
+### CLI usage (for Go CLI tool):
+# dot-http api.http                  # uses .env
+# dot-http --env dev api.http        # loads dev.env
+# dot-http --env staging api.http    # loads staging.env
+# dot-http --env prod api.http       # loads prod.env
