@@ -638,14 +638,15 @@ func copyVisited(src map[string]bool) map[string]bool {
 }
 
 var (
-	nameRegex        = regexp.MustCompile(`^\s*#\s*@name\s*=\s*(\w+)`)
-	requiresRegex    = regexp.MustCompile(`^\s*#\s*@requires\s*=\s*(\w+)(?:\((.*)\))?`)
+	nameRegex        = regexp.MustCompile(`^\s*@name\s*=\s*(\w+)`)
+	requiresRegex    = regexp.MustCompile(`^\s*@requires\s*=\s*(\w+)(?:\((.*)\))?`)
 	variableRegex    = regexp.MustCompile(`^\s*@([^\s=]+)\s*=\s*(.+?)\s*$`)
 	importRegex      = regexp.MustCompile(`^\s*@import\s*=\s*(.+?)\s*$`)
 	oauth2CacheRegex = regexp.MustCompile(`^\s*@oauth2-cache\s*=\s*(.+?)\s*$`)
 	substituteRe     = regexp.MustCompile(`\{\{(?:\$env\s+)?([^\s}]+)\}\}`)
-	expectRegex      = regexp.MustCompile(`^\s*#\s*@expect\s+(\d+)`)
-	assertRegex      = regexp.MustCompile(`^\s*#\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$`)
+	expectRegex      = regexp.MustCompile(`^\s*@expect\s+(\d+)`)
+	assertRegex      = regexp.MustCompile(`^\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$`)
+	noFollowRegex    = regexp.MustCompile(`^\s*@no-follow\s*$`)
 )
 
 func parseDocumentRequests(text string) []RequestBlock {
@@ -858,7 +859,7 @@ func parseRequest(text string) (method, rawURL string, headers map[string]string
 	methodLineIdx := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "//") {
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "//") && !strings.HasPrefix(trimmed, "@") {
 			methodLineIdx = i
 			break
 		}
@@ -882,6 +883,9 @@ func parseRequest(text string) (method, rawURL string, headers map[string]string
 		if trimmed == "" {
 			bodyStartIdx = i + 1
 			break
+		}
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "@") {
+			continue
 		}
 		colonIdx := strings.Index(trimmed, ":")
 		if colonIdx > 0 {
@@ -951,7 +955,19 @@ func performRequest(requestText string, client *http.Client, cfg *Config, cache 
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	effectiveClient := client
+	for _, l := range strings.Split(requestText, "\n") {
+		if noFollowRegex.MatchString(l) {
+			c := *client
+			c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			}
+			effectiveClient = &c
+			break
+		}
+	}
+
+	resp, err := effectiveClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("executing request: %w", err)
 	}

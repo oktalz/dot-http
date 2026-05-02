@@ -40,14 +40,14 @@ type Params struct {
 
 // DirectiveRegexes maps directive names to compiled regexes.
 var DirectiveRegexes = map[string]*regexp.Regexp{
-	"grant":         regexp.MustCompile(`^\s*#\s*@oauth2-grant\s*=\s*(.+?)\s*$`),
-	"token-url":     regexp.MustCompile(`^\s*#\s*@oauth2-token-url\s*=\s*(.+?)\s*$`),
-	"auth-url":      regexp.MustCompile(`^\s*#\s*@oauth2-auth-url\s*=\s*(.+?)\s*$`),
-	"device-url":    regexp.MustCompile(`^\s*#\s*@oauth2-device-url\s*=\s*(.+?)\s*$`),
-	"client-id":     regexp.MustCompile(`^\s*#\s*@oauth2-client-id\s*=\s*(.+?)\s*$`),
-	"client-secret": regexp.MustCompile(`^\s*#\s*@oauth2-client-secret\s*=\s*(.+?)\s*$`),
-	"scope":         regexp.MustCompile(`^\s*#\s*@oauth2-scope\s*=\s*(.+?)\s*$`),
-	"redirect-port": regexp.MustCompile(`^\s*#\s*@oauth2-redirect-port\s*=\s*(.+?)\s*$`),
+	"grant":         regexp.MustCompile(`^\s*@oauth2-grant\s*=\s*(.+?)\s*$`),
+	"token-url":     regexp.MustCompile(`^\s*@oauth2-token-url\s*=\s*(.+?)\s*$`),
+	"auth-url":      regexp.MustCompile(`^\s*@oauth2-auth-url\s*=\s*(.+?)\s*$`),
+	"device-url":    regexp.MustCompile(`^\s*@oauth2-device-url\s*=\s*(.+?)\s*$`),
+	"client-id":     regexp.MustCompile(`^\s*@oauth2-client-id\s*=\s*(.+?)\s*$`),
+	"client-secret": regexp.MustCompile(`^\s*@oauth2-client-secret\s*=\s*(.+?)\s*$`),
+	"scope":         regexp.MustCompile(`^\s*@oauth2-scope\s*=\s*(.+?)\s*$`),
+	"redirect-port": regexp.MustCompile(`^\s*@oauth2-redirect-port\s*=\s*(.+?)\s*$`),
 }
 
 // ParseParams extracts OAuth2 directives from request block text lines.

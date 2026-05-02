@@ -121,14 +121,14 @@ class OAuth2Cache {
 }
 
 const oauth2DirectiveRegexes: Record<string, RegExp> = {
-    grant:          /^\s*#\s*@oauth2-grant\s*=\s*(.+?)\s*$/,
-    tokenUrl:       /^\s*#\s*@oauth2-token-url\s*=\s*(.+?)\s*$/,
-    authUrl:        /^\s*#\s*@oauth2-auth-url\s*=\s*(.+?)\s*$/,
-    deviceUrl:      /^\s*#\s*@oauth2-device-url\s*=\s*(.+?)\s*$/,
-    clientId:       /^\s*#\s*@oauth2-client-id\s*=\s*(.+?)\s*$/,
-    clientSecret:   /^\s*#\s*@oauth2-client-secret\s*=\s*(.+?)\s*$/,
-    scope:          /^\s*#\s*@oauth2-scope\s*=\s*(.+?)\s*$/,
-    redirectPort:   /^\s*#\s*@oauth2-redirect-port\s*=\s*(.+?)\s*$/,
+    grant:          /^\s*@oauth2-grant\s*=\s*(.+?)\s*$/,
+    tokenUrl:       /^\s*@oauth2-token-url\s*=\s*(.+?)\s*$/,
+    authUrl:        /^\s*@oauth2-auth-url\s*=\s*(.+?)\s*$/,
+    deviceUrl:      /^\s*@oauth2-device-url\s*=\s*(.+?)\s*$/,
+    clientId:       /^\s*@oauth2-client-id\s*=\s*(.+?)\s*$/,
+    clientSecret:   /^\s*@oauth2-client-secret\s*=\s*(.+?)\s*$/,
+    scope:          /^\s*@oauth2-scope\s*=\s*(.+?)\s*$/,
+    redirectPort:   /^\s*@oauth2-redirect-port\s*=\s*(.+?)\s*$/,
 };
 
 function parseOAuth2Params(lines: string[]): OAuth2Params | undefined {
@@ -647,11 +647,11 @@ function parseDocumentRequests(text: string): RequestBlock[] {
     let currentLines: string[] = [];
     let currentStartLine = 0;
 
-    const nameRegex = /^\s*#\s*@name\s*=\s*(\w+)/;
-    const requiresRegex = /^\s*#\s*@requires\s*=\s*(\w+)(?:\((.*)\))?/;
-    const expectRegex = /^\s*#\s*@expect\s+(\d+)/;
-    const assertRegex = /^\s*#\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$/;
-    const noFollowRegex = /^\s*#\s*@no-follow/;
+    const nameRegex = /^\s*@name\s*=\s*(\w+)/;
+    const requiresRegex = /^\s*@requires\s*=\s*(\w+)(?:\((.*)\))?/;
+    const expectRegex = /^\s*@expect\s+(\d+)/;
+    const assertRegex = /^\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$/;
+    const noFollowRegex = /^\s*@no-follow/;
 
     const processBlock = () => {
         if (currentLines.length === 0) { return; }
@@ -801,7 +801,7 @@ function parseRequest(text: string): { method: string; url: string; headers: Rec
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        if (line && !line.startsWith('#') && !line.startsWith('//')) {
+        if (line && !line.startsWith('#') && !line.startsWith('//') && !line.startsWith('@')) {
             methodLineIndex = i;
             break;
         }
@@ -819,6 +819,7 @@ function parseRequest(text: string): { method: string; url: string; headers: Rec
     for (let i = methodLineIndex + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line === '') { bodyStartIndex = i + 1; break; }
+        if (line.startsWith('#') || line.startsWith('//') || line.startsWith('@')) { continue; }
         const colonIndex = line.indexOf(':');
         if (colonIndex > 0) {
             headers[line.substring(0, colonIndex).trim()] = line.substring(colonIndex + 1).trim();

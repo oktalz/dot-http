@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,7 @@ DELETE https://example.com/c`
 }
 
 func TestParseDocumentRequests_NameMetadata(t *testing.T) {
-	text := `# @name = login
+	text := `@name = login
 POST https://example.com/auth`
 
 	blocks := parseDocumentRequests(text)
@@ -65,8 +66,8 @@ POST https://example.com/auth`
 }
 
 func TestParseDocumentRequests_RequiresMetadata(t *testing.T) {
-	text := `# @name = profile
-# @requires = login
+	text := `@name = profile
+@requires = login
 GET https://example.com/profile`
 
 	blocks := parseDocumentRequests(text)
@@ -82,8 +83,8 @@ GET https://example.com/profile`
 }
 
 func TestParseDocumentRequests_ParameterizedRequires(t *testing.T) {
-	text := `# @name = compare
-# @requires = getUser(id=1, name=alice)
+	text := `@name = compare
+@requires = getUser(id=1, name=alice)
 GET https://example.com/compare`
 
 	blocks := parseDocumentRequests(text)
@@ -103,9 +104,9 @@ GET https://example.com/compare`
 }
 
 func TestParseDocumentRequests_MultipleRequires(t *testing.T) {
-	text := `# @name = final
-# @requires = first
-# @requires = second
+	text := `@name = final
+@requires = first
+@requires = second
 GET https://example.com/final`
 
 	blocks := parseDocumentRequests(text)
@@ -117,6 +118,102 @@ GET https://example.com/final`
 	}
 	if blocks[0].Requires[1].Name != "second" {
 		t.Errorf("expected 'second', got '%s'", blocks[0].Requires[1].Name)
+	}
+}
+
+func TestParseDocumentRequests_BareDirectives(t *testing.T) {
+	text := `@name = profile
+@requires = login
+@expect 200
+@assert body.ok == true
+GET https://example.com/profile`
+
+	blocks := parseDocumentRequests(text)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	b := blocks[0]
+	if b.Name != "profile" {
+		t.Errorf("expected name 'profile', got '%s'", b.Name)
+	}
+	if len(b.Requires) != 1 || b.Requires[0].Name != "login" {
+		t.Errorf("expected requires=[login], got %+v", b.Requires)
+	}
+	if b.ExpectStatus != 200 {
+		t.Errorf("expected status 200, got %d", b.ExpectStatus)
+	}
+	if len(b.Assertions) != 1 || b.Assertions[0].Target != "body.ok" {
+		t.Errorf("expected one assertion on body.ok, got %+v", b.Assertions)
+	}
+
+	// Bare directive must not be treated as the method line.
+	method, url, _, _, ok := parseRequest(b.Text)
+	if !ok {
+		t.Fatal("parseRequest returned !ok")
+	}
+	if method != "GET" || url != "https://example.com/profile" {
+		t.Errorf("expected GET https://example.com/profile, got %s %s", method, url)
+	}
+}
+
+func TestPerformRequest_PerRequestNoFollow(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	cfg := &Config{}
+	client, _ := buildClient(cfg)
+
+	followedText := "GET " + redirector.URL
+	resp, err := performRequest(followedText, client, cfg, nil)
+	if err != nil {
+		t.Fatalf("default follow request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 (followed), got %d", resp.StatusCode)
+	}
+
+	commentedText := "# @no-follow\nGET " + redirector.URL
+	resp, err = performRequest(commentedText, client, cfg, nil)
+	if err != nil {
+		t.Fatalf("`# @no-follow` request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("`# @no-follow` is a comment and must not disable follow; expected 200, got %d", resp.StatusCode)
+	}
+
+	bareText := "@no-follow\nGET " + redirector.URL
+	resp, err = performRequest(bareText, client, cfg, nil)
+	if err != nil {
+		t.Fatalf("bare @no-follow request: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("expected 302 with bare `@no-follow`, got %d", resp.StatusCode)
+	}
+}
+
+func TestParseDocumentRequests_DoubleHashIsComment(t *testing.T) {
+	text := `## @name = ignored
+## @expect 500
+@name = real
+GET https://example.com/x`
+
+	blocks := parseDocumentRequests(text)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if blocks[0].Name != "real" {
+		t.Errorf("expected name 'real' (## lines should be comments), got '%s'", blocks[0].Name)
+	}
+	if blocks[0].ExpectStatus != 0 {
+		t.Errorf("expected no expect status (## should be ignored), got %d", blocks[0].ExpectStatus)
 	}
 }
 
@@ -727,7 +824,7 @@ func TestFullFileParsing(t *testing.T) {
 @token = abc123
 
 ###
-# @name = login
+@name = login
 POST {{baseUrl}}/auth
 Content-Type: application/json
 
@@ -735,16 +832,16 @@ Content-Type: application/json
 
 ###
 
-# @name = getProfile
-# @requires = login
+@name = getProfile
+@requires = login
 GET {{baseUrl}}/profile
 Authorization: Bearer {{token}}
 
 ###
 
-# @name = updateProfile
-# @requires = getProfile
-# @requires = login
+@name = updateProfile
+@requires = getProfile
+@requires = login
 PUT {{baseUrl}}/profile
 Content-Type: application/json
 
@@ -903,7 +1000,7 @@ func TestParseImports_Basic(t *testing.T) {
 	authContent := `@authUrl = https://auth.example.com
 
 ###
-# @name = login
+@name = login
 POST {{authUrl}}/token
 Content-Type: application/json
 
@@ -912,7 +1009,7 @@ Content-Type: application/json
 	os.WriteFile(filepath.Join(dir, "auth.http"), []byte(authContent), 0644)
 
 	// Main file imports auth.http
-	mainContent := fmt.Sprintf("@import = auth.http\n@baseUrl = https://api.example.com\n\n###\n# @requires = login\nGET {{baseUrl}}/profile\n")
+	mainContent := fmt.Sprintf("@import = auth.http\n@baseUrl = https://api.example.com\n\n###\n@requires = login\nGET {{baseUrl}}/profile\n")
 
 	visited := map[string]bool{filepath.Join(dir, "main.http"): true}
 	blocks, vars, err := parseImports(mainContent, dir, visited)
@@ -946,8 +1043,8 @@ Content-Type: application/json
 func TestParseImports_Multiple(t *testing.T) {
 	dir := t.TempDir()
 
-	os.WriteFile(filepath.Join(dir, "a.http"), []byte("# @name = reqA\nGET https://a.test\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.http"), []byte("# @name = reqB\nGET https://b.test\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "a.http"), []byte("@name = reqA\nGET https://a.test\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.http"), []byte("@name = reqB\nGET https://b.test\n"), 0644)
 
 	mainContent := "@import = a.http\n@import = b.http\n"
 
@@ -975,10 +1072,10 @@ func TestParseImports_NestedImports(t *testing.T) {
 	dir := t.TempDir()
 
 	// base.http defines a request
-	os.WriteFile(filepath.Join(dir, "base.http"), []byte("# @name = base\nGET https://base.test\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "base.http"), []byte("@name = base\nGET https://base.test\n"), 0644)
 
 	// mid.http imports base.http
-	os.WriteFile(filepath.Join(dir, "mid.http"), []byte("@import = base.http\n\n###\n# @name = mid\nGET https://mid.test\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "mid.http"), []byte("@import = base.http\n\n###\n@name = mid\nGET https://mid.test\n"), 0644)
 
 	// main imports mid.http — should get both base and mid
 	mainContent := "@import = mid.http\n"
@@ -1007,8 +1104,8 @@ func TestParseImports_CyclicImportsHandled(t *testing.T) {
 	dir := t.TempDir()
 
 	// a.http imports b.http, b.http imports a.http
-	os.WriteFile(filepath.Join(dir, "a.http"), []byte("@import = b.http\n\n###\n# @name = reqA\nGET https://a.test\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.http"), []byte("@import = a.http\n\n###\n# @name = reqB\nGET https://b.test\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "a.http"), []byte("@import = b.http\n\n###\n@name = reqA\nGET https://a.test\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.http"), []byte("@import = a.http\n\n###\n@name = reqB\nGET https://b.test\n"), 0644)
 
 	mainContent := "@import = a.http\n"
 
@@ -1070,7 +1167,7 @@ func TestImport_EndToEnd_ChainAcrossFiles(t *testing.T) {
 	dir := t.TempDir()
 
 	// auth.http: a named request
-	authContent := `# @name = login
+	authContent := `@name = login
 GET https://login.test
 `
 	os.WriteFile(filepath.Join(dir, "auth.http"), []byte(authContent), 0644)
@@ -1079,8 +1176,8 @@ GET https://login.test
 	mainContent := `@import = auth.http
 
 ###
-# @name = profile
-# @requires = login
+@name = profile
+@requires = login
 GET https://profile.test/{{login.body.userId}}
 `
 	os.WriteFile(filepath.Join(dir, "main.http"), []byte(mainContent), 0644)

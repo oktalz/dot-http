@@ -97,12 +97,21 @@ dot-http --env prod api.http        # loads prod.env
 dot-http --env staging api.http     # loads staging.env
 ```
 
-### Request chaining
+### Per-request directives
 
-Name a request with `# @name` and reference its response in subsequent requests using dot notation:
+Per-request directives use bare `@` syntax: `@name`, `@requires`, `@expect`, `@assert`, `@no-follow`, `@oauth2-*`. Lines starting with `#` are treated as comments — useful for disabling a directive without deleting it:
 
 ```http
-# @name = login
+@expect 201
+# @expect 500   ← commented out, ignored
+```
+
+### Request chaining
+
+Name a request with `@name` and reference its response in subsequent requests using dot notation:
+
+```http
+@name = login
 POST https://api.example.com/auth
 Content-Type: application/json
 
@@ -110,7 +119,7 @@ Content-Type: application/json
 
 ###
 
-# @requires = login
+@requires = login
 GET https://api.example.com/profile
 Authorization: Bearer {{login.body.token}}
 ```
@@ -125,25 +134,25 @@ Available response fields:
 Pass arguments to dependencies to reuse the same request with different parameters:
 
 ```http
-# @name = getUser
+@name = getUser
 GET https://api.example.com/users/{{id}}
 
 ###
 
-# @requires = getUser(id=1)
-# @requires = getUser(id=2)
+@requires = getUser(id=1)
+@requires = getUser(id=2)
 GET https://api.example.com/compare
 ```
 
 ### Assertions & testing
 
-Use `# @expect` to assert the response status code, and `# @assert` for header/body checks. Exit code is non-zero on failure — suitable for CI.
+Use `@expect` to assert the response status code, and `@assert` for header/body checks. Exit code is non-zero on failure — suitable for CI.
 
 ```http
-# @name = createUser
-# @expect 201
-# @assert body.name == John
-# @assert header.Content-Type contains application/json
+@name = createUser
+@expect 201
+@assert body.name == John
+@assert header.Content-Type contains application/json
 POST https://api.example.com/users
 Content-Type: application/json
 
@@ -157,6 +166,19 @@ Assertion targets:
 - `status` — HTTP status code
 - `body.<path>` — JSON body field (dot notation)
 - `header.<Name>` — response header value
+
+### Disabling redirects per request
+
+Use `@no-follow` to disable redirect following for a single request — useful for inspecting `Location` headers or asserting on the redirect itself:
+
+```http
+@expect 302
+@assert header.Location == https://example.com/new
+@no-follow
+GET https://example.com/old
+```
+
+This works in both the CLI and the VS Code extension. The CLI's `--no-follow` flag still applies globally to every request.
 
 ### JUnit XML reports
 
@@ -200,7 +222,7 @@ Split requests across files using `@import`. Imported files make their named req
 @import = helpers/users.http
 
 ###
-# @requires = login
+@requires = login
 GET https://api.example.com/profile
 Authorization: Bearer {{login.body.token}}
 ```
@@ -216,16 +238,16 @@ The tool detects and reports circular dependencies with an error message.
 
 ### OAuth2
 
-Declare OAuth2 directives as per-request comments. The token is acquired automatically and injected as `Authorization: Bearer <token>`. Tokens are cached with expiry so re-runs don't re-authenticate.
+Declare OAuth2 directives as per-request directives. The token is acquired automatically and injected as `Authorization: Bearer <token>`. Tokens are cached with expiry so re-runs don't re-authenticate.
 
 #### Client Credentials (machine-to-machine)
 
 ```http
-# @oauth2-grant = client_credentials
-# @oauth2-token-url = https://auth.example.com/oauth/token
-# @oauth2-client-id = {{CLIENT_ID}}
-# @oauth2-client-secret = {{CLIENT_SECRET}}
-# @oauth2-scope = read write
+@oauth2-grant = client_credentials
+@oauth2-token-url = https://auth.example.com/oauth/token
+@oauth2-client-id = {{CLIENT_ID}}
+@oauth2-client-secret = {{CLIENT_SECRET}}
+@oauth2-scope = read write
 GET https://api.example.com/resource
 ```
 
@@ -234,12 +256,12 @@ GET https://api.example.com/resource
 Spins up a local server, opens the browser, captures the code, exchanges it for a token.
 
 ```http
-# @oauth2-grant = authorization_code
-# @oauth2-token-url = https://auth.example.com/oauth/token
-# @oauth2-auth-url = https://auth.example.com/oauth/authorize
-# @oauth2-client-id = {{CLIENT_ID}}
-# @oauth2-scope = openid profile
-# @oauth2-redirect-port = 9876
+@oauth2-grant = authorization_code
+@oauth2-token-url = https://auth.example.com/oauth/token
+@oauth2-auth-url = https://auth.example.com/oauth/authorize
+@oauth2-client-id = {{CLIENT_ID}}
+@oauth2-scope = openid profile
+@oauth2-redirect-port = 9876
 GET https://api.example.com/resource
 ```
 
@@ -248,11 +270,11 @@ GET https://api.example.com/resource
 Prints the verification URL and user code, then polls until approved.
 
 ```http
-# @oauth2-grant = device_code
-# @oauth2-token-url = https://auth.example.com/oauth/token
-# @oauth2-device-url = https://auth.example.com/oauth/device/code
-# @oauth2-client-id = {{CLIENT_ID}}
-# @oauth2-scope = read
+@oauth2-grant = device_code
+@oauth2-token-url = https://auth.example.com/oauth/token
+@oauth2-device-url = https://auth.example.com/oauth/device/code
+@oauth2-client-id = {{CLIENT_ID}}
+@oauth2-scope = read
 GET https://api.example.com/resource
 ```
 
