@@ -232,6 +232,10 @@ Content-Type: text/markdown
 
 ## Release Notes
 
+### 0.9.4
+
+Added aliasing support for `@requires` dependencies
+
 ### 0.9.3
 
 Added expect, assert

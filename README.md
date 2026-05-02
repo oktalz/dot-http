@@ -144,6 +144,21 @@ GET https://api.example.com/users/{{id}}
 GET https://api.example.com/compare
 ```
 
+To use the responses from individual calls, give each one an alias with `as <name>`:
+
+```http
+@name = getUser
+GET https://api.example.com/users/{{id}}
+
+###
+
+@requires = getUser(id=1) as user1
+@requires = getUser(id=2) as user2
+GET https://api.example.com/compare?a={{user1.body.name}}&b={{user2.body.name}}
+```
+
+Without an alias, repeated calls to the same dependency overwrite each other in the response context, so only the last call's response is reachable as `{{getUser.body...}}`.
+
 ### Assertions & testing
 
 Use `@expect` to assert the response status code, and `@assert` for header/body checks. Exit code is non-zero on failure — suitable for CI.

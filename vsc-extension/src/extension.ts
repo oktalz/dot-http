@@ -37,6 +37,7 @@ export interface ResponseData {
 export interface Dependency {
     name: string;
     args: Record<string, string>;
+    alias?: string;
 }
 
 export interface Assertion {
@@ -522,6 +523,9 @@ export async function executeRequestChain(
                 const val = childContext[key];
                 if (val && typeof val === 'object' && allBlocks.some(b => b.name === key)) {
                     context[key] = val;
+                    if (key === dep.name && dep.alias) {
+                        context[dep.alias] = val;
+                    }
                 }
             }
         }
@@ -648,7 +652,7 @@ function parseDocumentRequests(text: string): RequestBlock[] {
     let currentStartLine = 0;
 
     const nameRegex = /^\s*@name\s*=\s*(\w+)/;
-    const requiresRegex = /^\s*@requires\s*=\s*(\w+)(?:\((.*)\))?/;
+    const requiresRegex = /^\s*@requires\s*=\s*(\w+)(?:\((.*?)\))?(?:\s+as\s+(\w+))?\s*$/;
     const expectRegex = /^\s*@expect\s+(\d+)/;
     const assertRegex = /^\s*@assert\s+(\S+)\s+(==|!=|contains|!contains)\s+(.+?)\s*$/;
     const noFollowRegex = /^\s*@no-follow/;
@@ -675,7 +679,7 @@ function parseDocumentRequests(text: string): RequestBlock[] {
                         if (k && v) { args[k] = v; }
                     }
                 }
-                requires.push({ name: requiresMatch[1], args });
+                requires.push({ name: requiresMatch[1], args, alias: requiresMatch[3] });
             }
 
             const expectMatch = l.match(expectRegex);

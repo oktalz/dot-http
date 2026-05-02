@@ -121,6 +121,78 @@ GET https://example.com/final`
 	}
 }
 
+func TestParseDocumentRequests_RequiresAlias(t *testing.T) {
+	text := `@name = compare
+@requires = getUser(id=1) as user1
+@requires = getUser(id=2) as user2
+@requires = getUser
+GET https://example.com/compare`
+
+	blocks := parseDocumentRequests(text)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	deps := blocks[0].Requires
+	if len(deps) != 3 {
+		t.Fatalf("expected 3 deps, got %d", len(deps))
+	}
+	if deps[0].Name != "getUser" || deps[0].Args["id"] != "1" || deps[0].Alias != "user1" {
+		t.Errorf("dep[0] mismatch: %+v", deps[0])
+	}
+	if deps[1].Name != "getUser" || deps[1].Args["id"] != "2" || deps[1].Alias != "user2" {
+		t.Errorf("dep[1] mismatch: %+v", deps[1])
+	}
+	if deps[2].Name != "getUser" || deps[2].Alias != "" {
+		t.Errorf("dep[2] (no alias) mismatch: %+v", deps[2])
+	}
+}
+
+func TestExecuteRequestChain_AliasedDeps(t *testing.T) {
+	users := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/users/")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":%q,"name":"user-%s"}`, id, id)
+	}))
+	defer users.Close()
+
+	var compareURL string
+	compare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		compareURL = r.URL.String()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer compare.Close()
+
+	text := fmt.Sprintf(`@name = getUser
+GET %s/users/{{id}}
+
+###
+
+@name = compare
+@requires = getUser(id=1) as user1
+@requires = getUser(id=2) as user2
+GET %s/cmp?a={{user1.body.name}}&b={{user2.body.name}}
+`, users.URL, compare.URL)
+
+	blocks := parseDocumentRequests(text)
+	target := findBlock(blocks, "compare")
+	if target == nil {
+		t.Fatal("compare block not found")
+	}
+
+	cfg := &Config{}
+	client, _ := buildClient(cfg)
+	performer := makePerformer(client, cfg, nil)
+
+	var results []TestResult
+	if _, err := executeRequestChain(target, blocks, map[string]any{}, performer, map[string]bool{}, &results); err != nil {
+		t.Fatalf("chain execution failed: %v", err)
+	}
+
+	if compareURL != "/cmp?a=user-1&b=user-2" {
+		t.Errorf("expected aliased substitution to send /cmp?a=user-1&b=user-2, got %s", compareURL)
+	}
+}
+
 func TestParseDocumentRequests_BareDirectives(t *testing.T) {
 	text := `@name = profile
 @requires = login

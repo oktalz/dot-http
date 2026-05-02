@@ -30,10 +30,11 @@ type ResponseData struct {
 	Body          string
 }
 
-// Dependency represents a @requires directive with optional arguments.
+// Dependency represents a @requires directive with optional arguments and alias.
 type Dependency struct {
-	Name string
-	Args map[string]string
+	Name  string
+	Args  map[string]string
+	Alias string // optional `as <alias>` — response key in parent context
 }
 
 // Assertion represents a # @assert directive.
@@ -471,6 +472,9 @@ func executeRequestChain(
 					if val, ok := childContext[b.Name]; ok {
 						if _, isMap := val.(map[string]any); isMap {
 							context[b.Name] = val
+							if b.Name == dep.Name && dep.Alias != "" {
+								context[dep.Alias] = val
+							}
 						}
 					}
 				}
@@ -639,7 +643,7 @@ func copyVisited(src map[string]bool) map[string]bool {
 
 var (
 	nameRegex        = regexp.MustCompile(`^\s*@name\s*=\s*(\w+)`)
-	requiresRegex    = regexp.MustCompile(`^\s*@requires\s*=\s*(\w+)(?:\((.*)\))?`)
+	requiresRegex    = regexp.MustCompile(`^\s*@requires\s*=\s*(\w+)(?:\((.*?)\))?(?:\s+as\s+(\w+))?\s*$`)
 	variableRegex    = regexp.MustCompile(`^\s*@([^\s=]+)\s*=\s*(.+?)\s*$`)
 	importRegex      = regexp.MustCompile(`^\s*@import\s*=\s*(.+?)\s*$`)
 	oauth2CacheRegex = regexp.MustCompile(`^\s*@oauth2-cache\s*=\s*(.+?)\s*$`)
@@ -670,7 +674,7 @@ func parseDocumentRequests(text string) []RequestBlock {
 				name = m[1]
 			}
 			if m := requiresRegex.FindStringSubmatch(l); m != nil {
-				dep := Dependency{Name: m[1], Args: make(map[string]string)}
+				dep := Dependency{Name: m[1], Args: make(map[string]string), Alias: m[3]}
 				if m[2] != "" {
 					for _, part := range strings.Split(m[2], ",") {
 						kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
