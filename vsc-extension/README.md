@@ -18,6 +18,12 @@ This project includes two components:
 - **GraphQL** — automatic query wrapping
 - **Redirect control** — per-request opt-out with `# @no-follow`
 - **Importing other files** — share requests and variables across `.http` files
+- **Autocomplete** — context-aware completion for directives, `{{variables}}`, request names, HTTP methods, and headers
+- **Hover** — hover a `{{variable}}` to see its resolved value/source, or a directive for its docs
+- **Diagnostics** — warns on undefined variables, `@requires` pointing at a missing `@name`, duplicate names, and malformed `@assert`
+- **Outline & navigation** — named requests in the outline/breadcrumbs; go-to-definition and find-references for `@requires`/`@name` and `{{variables}}`
+- **Folding** — collapse request blocks; "Fold All / Unfold All Requests" commands
+- **Syntax highlighting** — methods, headers, directives, and `{{variables}}` are colorized
 
 ## Usage Examples
 
@@ -207,6 +213,17 @@ Authorization: Bearer {{login.body.token}}
 - Paths are relative to the importing file's directory
 - Imports are recursive; cyclic imports are safely skipped
 
+### Autocomplete
+
+The extension offers context-aware completions in `.http` and `.rest` files (trigger automatically as you type, or with `Ctrl+Space`):
+
+- **Directives** — typing `@` suggests `@name`, `@requires`, `@expect`, `@assert`, `@env`, `@session`, `@import`, `@no-follow`, and all `@oauth2-*` directives
+- **Variables** — inside `{{ }}` (and `{{$env }}`) suggests variables from `@var` declarations, `.env` files, imported files, and named requests
+- **Request names** — after `@requires =`, suggests names of `@name`-declared requests in the file
+- **Assertions** — after `@assert`, suggests targets (`status`, `body.`, `header.`) then operators
+- **Enums** — `@oauth2-grant =` suggests the grant types; `Content-Type:` suggests common content types
+- **Methods & headers** — at the start of a line, suggests HTTP methods (`GET`, `POST`, …) and common header names
+
 ### Sending Files (Multipart/Form-Data)
 
 ```http
@@ -231,6 +248,10 @@ Content-Type: text/markdown
 | `dot-http.oauth2CacheFile` | `.tokens.json` | Default token cache file (relative to workspace root) |
 
 ## Release Notes
+
+### 0.9.5
+
+Added autocomplete, hover, diagnostics, outline, go-to-definition/references, folding (with Fold/Unfold All commands), and syntax highlighting for `.http` files
 
 ### 0.9.4
 

@@ -7,7 +7,7 @@
   "repository": {
     "url": "https://github.com/oktalz/dot-http"
   },
-  "version": "0.9.4",
+  "version": "0.9.5",
   "engines": {
     "vscode": "^1.108.0"
   },
@@ -29,15 +29,43 @@
         "extensions": [
           ".http",
           ".rest"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "http",
+        "scopeName": "source.http",
+        "path": "./syntaxes/http.tmLanguage.json"
       }
     ],
     "commands": [
       {
         "command": "dot-http.runRequest",
         "title": "Run Request"
+      },
+      {
+        "command": "dot-http.foldAll",
+        "title": "dot-http: Fold All Requests"
+      },
+      {
+        "command": "dot-http.unfoldAll",
+        "title": "dot-http: Unfold All Requests"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "dot-http.foldAll",
+          "when": "editorLangId == http"
+        },
+        {
+          "command": "dot-http.unfoldAll",
+          "when": "editorLangId == http"
+        }
+      ]
+    },
     "configuration": {
       "title": "Http Client",
       "properties": {

@@ -404,6 +404,44 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider(
+            { language: 'http', scheme: 'file' },
+            new HttpCompletionProvider(),
+            '@', '{', ' ', '.'
+        )
+    );
+
+    const httpSelector: vscode.DocumentSelector = { language: 'http', scheme: 'file' };
+
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(httpSelector, new HttpHoverProvider()),
+        vscode.languages.registerDocumentSymbolProvider(httpSelector, new HttpDocumentSymbolProvider()),
+        vscode.languages.registerDefinitionProvider(httpSelector, new HttpDefinitionProvider()),
+        vscode.languages.registerReferenceProvider(httpSelector, new HttpReferenceProvider()),
+        vscode.languages.registerFoldingRangeProvider(httpSelector, new HttpFoldingRangeProvider())
+    );
+
+    // Diagnostics
+    const diagnostics = vscode.languages.createDiagnosticCollection('dot-http');
+    context.subscriptions.push(diagnostics);
+    const refreshDiagnostics = (doc: vscode.TextDocument) => {
+        if (doc.languageId !== 'http') { return; }
+        diagnostics.set(doc.uri, computeDiagnostics(doc));
+    };
+    if (vscode.window.activeTextEditor) { refreshDiagnostics(vscode.window.activeTextEditor.document); }
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument(refreshDiagnostics),
+        vscode.workspace.onDidChangeTextDocument(e => refreshDiagnostics(e.document)),
+        vscode.workspace.onDidCloseTextDocument(doc => diagnostics.delete(doc.uri))
+    );
+
+    // Fold / unfold all commands (scoped to the active .http editor)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('dot-http.foldAll', () => vscode.commands.executeCommand('editor.foldAll')),
+        vscode.commands.registerCommand('dot-http.unfoldAll', () => vscode.commands.executeCommand('editor.unfoldAll'))
+    );
+
+    context.subscriptions.push(
         vscode.workspace.registerTextDocumentContentProvider(RESPONSE_SCHEME, responseProvider)
     );
 
@@ -628,6 +666,652 @@ class HttpCodeLensProvider implements vscode.CodeLensProvider {
             }
         }
         return lenses;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Autocomplete
+// ---------------------------------------------------------------------------
+
+interface DirectiveSpec {
+    label: string;          // text inserted, e.g. "@name = "
+    detail: string;         // short right-hand description
+    doc: string;            // hover documentation
+    scope: 'file' | 'request' | 'both';
+}
+
+const DIRECTIVE_SPECS: DirectiveSpec[] = [
+    // File-level
+    { label: '@env', detail: 'load <name>.env', doc: 'Load environment variables from `<name>.env`.', scope: 'file' },
+    { label: '@session', detail: 'persist cookies', doc: 'Persist cookies to a JSON file across requests.', scope: 'file' },
+    { label: '@import', detail: 'import another .http file', doc: 'Import named requests and variables from another `.http` file.', scope: 'file' },
+    { label: '@oauth2-cache', detail: 'persist OAuth2 tokens', doc: 'Persist OAuth2 tokens to a file (e.g. `.tokens.json`).', scope: 'file' },
+    // Per-request
+    { label: '@name', detail: 'name a request', doc: 'Name a request so it can be referenced via `@requires`.', scope: 'request' },
+    { label: '@requires', detail: 'declare dependency', doc: 'Run another named request first. Supports `foo(key=val)` and trailing `as <alias>`.', scope: 'request' },
+    { label: '@expect', detail: 'assert status code', doc: 'Assert the response status code, e.g. `@expect 201`.', scope: 'request' },
+    { label: '@assert', detail: 'assert body/header', doc: 'Assert on body/header. Ops: `==`, `!=`, `contains`, `!contains`.', scope: 'request' },
+    { label: '@no-follow', detail: "don't follow redirects", doc: "Don't follow redirects for this request.", scope: 'request' },
+    // OAuth2 per-request
+    { label: '@oauth2-grant', detail: 'client_credentials | authorization_code | device_code', doc: 'OAuth2 grant type.', scope: 'request' },
+    { label: '@oauth2-token-url', detail: 'token endpoint', doc: 'OAuth2 token endpoint URL.', scope: 'request' },
+    { label: '@oauth2-auth-url', detail: 'authorization endpoint', doc: 'Authorization endpoint URL (authorization_code only).', scope: 'request' },
+    { label: '@oauth2-device-url', detail: 'device endpoint', doc: 'Device authorization endpoint URL (device_code only).', scope: 'request' },
+    { label: '@oauth2-client-id', detail: 'client id', doc: 'OAuth2 client id.', scope: 'request' },
+    { label: '@oauth2-client-secret', detail: 'client secret (optional)', doc: 'OAuth2 client secret. Optional for public clients.', scope: 'request' },
+    { label: '@oauth2-scope', detail: 'scope', doc: 'OAuth2 scope.', scope: 'request' },
+    { label: '@oauth2-redirect-port', detail: 'callback port', doc: 'Local callback port for authorization_code (default 9876).', scope: 'request' },
+];
+
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'CONNECT', 'TRACE'];
+
+const COMMON_HEADERS = [
+    'Accept', 'Accept-Encoding', 'Accept-Language', 'Authorization', 'Cache-Control',
+    'Content-Type', 'Content-Length', 'Cookie', 'Host', 'Origin', 'Referer',
+    'User-Agent', 'X-Requested-With', 'X-Api-Key',
+];
+
+const CONTENT_TYPES = [
+    'application/json', 'application/x-www-form-urlencoded', 'application/graphql',
+    'application/xml', 'multipart/form-data', 'text/plain', 'text/html',
+];
+
+const ASSERT_TARGETS = ['status', 'body.', 'header.'];
+const ASSERT_OPS = ['==', '!=', 'contains', '!contains'];
+const OAUTH2_GRANTS = ['client_credentials', 'authorization_code', 'device_code'];
+
+export type CompletionMode =
+    | { kind: 'variable'; prefix: string }
+    | { kind: 'requestName' }
+    | { kind: 'assertTarget' }
+    | { kind: 'assertOp' }
+    | { kind: 'oauth2Grant' }
+    | { kind: 'contentType' }
+    | { kind: 'directive' }
+    | { kind: 'methodOrHeader' }
+    | { kind: 'none' };
+
+/**
+ * Decide which completion set a line prefix should produce. Pure (no vscode
+ * dependency) so it can be unit-tested directly. Order matters: more specific
+ * contexts are checked first.
+ */
+export function completionContext(linePrefix: string): CompletionMode {
+    // 1. Inside {{ }} — variable names
+    const varMatch = linePrefix.match(/\{\{(?:\$env\s+)?([^\s}]*)$/);
+    if (varMatch) { return { kind: 'variable', prefix: varMatch[1] }; }
+
+    // 2. @requires = <name> — request names
+    if (/^\s*@requires\s*=\s*(\w*)$/.test(linePrefix)) { return { kind: 'requestName' }; }
+
+    // 3. @assert <target> <op> — targets then ops
+    if (/^\s*@assert\s+(\S*)$/.test(linePrefix)) { return { kind: 'assertTarget' }; }
+    if (/^\s*@assert\s+\S+\s+(\S*)$/.test(linePrefix)) { return { kind: 'assertOp' }; }
+
+    // 4. @oauth2-grant = — grant types
+    if (/^\s*@oauth2-grant\s*=\s*\w*$/.test(linePrefix)) { return { kind: 'oauth2Grant' }; }
+
+    // 5. Content-Type: — content type values
+    if (/^\s*Content-Type\s*:\s*[\w/+.-]*$/i.test(linePrefix)) { return { kind: 'contentType' }; }
+
+    // 6. Line starts with @ — directive names
+    if (/^\s*@[\w-]*$/.test(linePrefix)) { return { kind: 'directive' }; }
+
+    // 7. Empty / start of line — HTTP methods and header names
+    if (/^\s*[A-Za-z-]*$/.test(linePrefix)) { return { kind: 'methodOrHeader' }; }
+
+    return { kind: 'none' };
+}
+
+class HttpCompletionProvider implements vscode.CompletionItemProvider {
+    provideCompletionItems(
+        document: vscode.TextDocument,
+        position: vscode.Position
+    ): vscode.CompletionItem[] {
+        const lineText = document.lineAt(position.line).text;
+        const linePrefix = lineText.substring(0, position.character);
+        const ctx = completionContext(linePrefix);
+
+        switch (ctx.kind) {
+            case 'variable':
+                return this.variableCompletions(document, ctx.prefix);
+            case 'requestName':
+                return this.requestNameCompletions(document);
+            case 'assertTarget':
+                return ASSERT_TARGETS.map(t => {
+                    const item = new vscode.CompletionItem(t, vscode.CompletionItemKind.Field);
+                    item.detail = 'assert target';
+                    if (t.endsWith('.')) { item.command = { command: 'editor.action.triggerSuggest', title: '' }; }
+                    return item;
+                });
+            case 'assertOp':
+                return ASSERT_OPS.map(op => {
+                    const item = new vscode.CompletionItem(op, vscode.CompletionItemKind.Operator);
+                    item.detail = 'assert operator';
+                    return item;
+                });
+            case 'oauth2Grant':
+                return OAUTH2_GRANTS.map(g => {
+                    const item = new vscode.CompletionItem(g, vscode.CompletionItemKind.EnumMember);
+                    item.detail = 'oauth2 grant';
+                    return item;
+                });
+            case 'contentType':
+                return CONTENT_TYPES.map(ct => {
+                    const item = new vscode.CompletionItem(ct, vscode.CompletionItemKind.Value);
+                    item.detail = 'content type';
+                    return item;
+                });
+            case 'directive':
+                return this.directiveCompletions();
+            case 'methodOrHeader':
+                return [...this.methodCompletions(), ...this.headerCompletions()];
+            default:
+                return [];
+        }
+    }
+
+    private directiveCompletions(): vscode.CompletionItem[] {
+        return DIRECTIVE_SPECS.map(spec => {
+            const item = new vscode.CompletionItem(spec.label, vscode.CompletionItemKind.Keyword);
+            item.detail = spec.detail;
+            item.documentation = new vscode.MarkdownString(spec.doc);
+            if (spec.label === '@no-follow') {
+                item.insertText = 'no-follow';
+            } else {
+                // strip the leading '@' (already typed as trigger) and add ' = '
+                item.insertText = new vscode.SnippetString(`${spec.label.substring(1)} = $0`);
+                item.command = { command: 'editor.action.triggerSuggest', title: '' };
+            }
+            // Sort file-level and request-level together but keep @name/@requires near top
+            item.sortText = spec.scope === 'request' ? '1' + spec.label : '2' + spec.label;
+            return item;
+        });
+    }
+
+    private methodCompletions(): vscode.CompletionItem[] {
+        return HTTP_METHODS.map(m => {
+            const item = new vscode.CompletionItem(m, vscode.CompletionItemKind.Method);
+            item.detail = 'HTTP method';
+            item.insertText = new vscode.SnippetString(`${m} `);
+            item.sortText = '0' + m;
+            return item;
+        });
+    }
+
+    private headerCompletions(): vscode.CompletionItem[] {
+        return COMMON_HEADERS.map(h => {
+            const item = new vscode.CompletionItem(h, vscode.CompletionItemKind.Field);
+            item.detail = 'HTTP header';
+            item.insertText = new vscode.SnippetString(`${h}: $0`);
+            if (h === 'Content-Type') {
+                item.command = { command: 'editor.action.triggerSuggest', title: '' };
+            }
+            item.sortText = '1' + h;
+            return item;
+        });
+    }
+
+    private requestNameCompletions(document: vscode.TextDocument): vscode.CompletionItem[] {
+        const blocks = parseDocumentRequests(document.getText());
+        const seen = new Set<string>();
+        const items: vscode.CompletionItem[] = [];
+        for (const block of blocks) {
+            if (block.name && !seen.has(block.name)) {
+                seen.add(block.name);
+                const item = new vscode.CompletionItem(block.name, vscode.CompletionItemKind.Reference);
+                item.detail = 'named request';
+                items.push(item);
+            }
+        }
+        return items;
+    }
+
+    private variableCompletions(document: vscode.TextDocument, prefix: string): vscode.CompletionItem[] {
+        const names = new Set<string>();
+
+        // File variables
+        for (const name of Object.keys(parseFileVariables(document.getText()))) {
+            names.add(name);
+        }
+
+        // Imported variables
+        const documentDir = path.dirname(document.uri.fsPath);
+        try {
+            const visited = new Set<string>([path.resolve(document.uri.fsPath)]);
+            const imported = parseImports(document.getText(), documentDir, visited);
+            for (const name of Object.keys(imported.variables)) { names.add(name); }
+        } catch { /* ignore */ }
+
+        // .env variables (default + any @env target)
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || documentDir;
+        const fileConfig = parseFileConfig(document.getText());
+        const envFiles = new Set<string>(['.env']);
+        if (fileConfig.envName) { envFiles.add(`${fileConfig.envName}.env`); }
+        for (const envFile of envFiles) {
+            for (const name of Object.keys(loadEnvFile(workspaceRoot, envFile))) { names.add(name); }
+        }
+
+        // dot-path completion against named request bodies isn't statically known,
+        // but we can suggest the top-level request names too (they expose .body/.headers).
+        for (const block of parseDocumentRequests(document.getText())) {
+            if (block.name) { names.add(block.name); }
+        }
+
+        const items: vscode.CompletionItem[] = [];
+        for (const name of names) {
+            const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Variable);
+            item.detail = 'variable';
+            items.push(item);
+        }
+        return items;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers for editor features (hover, diagnostics, navigation)
+// ---------------------------------------------------------------------------
+
+/** A variable reference `{{...}}` found in the document, with its location. */
+interface VarRef {
+    /** Full reference name as written, e.g. `getPost.body.id` or `USER`. */
+    name: string;
+    /** Top-level segment used for lookups, e.g. `getPost` or `USER`. */
+    root: string;
+    line: number;
+    /** Start column of `root` within the line. */
+    startCol: number;
+    /** End column of `root` within the line. */
+    endCol: number;
+}
+
+const VAR_REF_REGEX = /\{\{(?:\$env\s+)?([^\s}]+)\}\}/g;
+
+/** Find every `{{var}}` reference in the document with precise positions. */
+function findVarRefs(text: string): VarRef[] {
+    const refs: VarRef[] = [];
+    const lines = text.split(/\r?\n/);
+    for (let line = 0; line < lines.length; line++) {
+        const re = new RegExp(VAR_REF_REGEX.source, 'g');
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(lines[line])) !== null) {
+            const full = m[1];
+            const root = full.split('.')[0];
+            // column where the captured group starts within the match
+            const groupStart = m.index + m[0].indexOf(full);
+            refs.push({
+                name: full,
+                root,
+                line,
+                startCol: groupStart,
+                endCol: groupStart + root.length,
+            });
+        }
+    }
+    return refs;
+}
+
+// Directives use bare `@key = value`; a leading `#` makes the line a comment
+// (a disabled directive). These helpers match the bare form to stay consistent
+// with parseDocumentRequests, which is what actually drives execution.
+
+/** Locate the line and column range of each `@name = X` declaration. */
+function findNameDeclarations(text: string): { name: string; line: number; startCol: number; endCol: number }[] {
+    const out: { name: string; line: number; startCol: number; endCol: number }[] = [];
+    const lines = text.split(/\r?\n/);
+    const re = /^(\s*@name\s*=\s*)(\w+)/;
+    for (let line = 0; line < lines.length; line++) {
+        const m = lines[line].match(re);
+        if (m) {
+            const startCol = m[1].length;
+            out.push({ name: m[2], line, startCol, endCol: startCol + m[2].length });
+        }
+    }
+    return out;
+}
+
+/** Locate every `@requires = X` reference (the X token). */
+function findRequiresRefs(text: string): { name: string; line: number; startCol: number; endCol: number }[] {
+    const out: { name: string; line: number; startCol: number; endCol: number }[] = [];
+    const lines = text.split(/\r?\n/);
+    const re = /^(\s*@requires\s*=\s*)(\w+)/;
+    for (let line = 0; line < lines.length; line++) {
+        const m = lines[line].match(re);
+        if (m) {
+            const startCol = m[1].length;
+            out.push({ name: m[2], line, startCol, endCol: startCol + m[2].length });
+        }
+    }
+    return out;
+}
+
+/**
+ * Collect the names known to a document for variable/reference resolution:
+ * file variables, imported variables, .env variables, and named requests.
+ */
+function collectKnownNames(document: vscode.TextDocument): {
+    fileVars: Record<string, string>;
+    envVars: Record<string, string>;
+    importedVars: Record<string, string>;
+    requestNames: Set<string>;
+} {
+    const text = document.getText();
+    const documentDir = path.dirname(document.uri.fsPath);
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || documentDir;
+
+    const fileVars = parseFileVariables(text);
+
+    let importedVars: Record<string, string> = {};
+    try {
+        const visited = new Set<string>([path.resolve(document.uri.fsPath)]);
+        importedVars = parseImports(text, documentDir, visited).variables;
+    } catch { /* ignore */ }
+
+    const fileConfig = parseFileConfig(text);
+    const envVars: Record<string, string> = {};
+    const envFiles = new Set<string>(['.env']);
+    if (fileConfig.envName) { envFiles.add(`${fileConfig.envName}.env`); }
+    for (const envFile of envFiles) {
+        Object.assign(envVars, loadEnvFile(workspaceRoot, envFile));
+    }
+
+    const requestNames = new Set<string>();
+    for (const b of parseDocumentRequests(text)) { if (b.name) { requestNames.add(b.name); } }
+
+    return { fileVars, envVars, importedVars, requestNames };
+}
+
+// ---------------------------------------------------------------------------
+// Hover
+// ---------------------------------------------------------------------------
+
+class HttpHoverProvider implements vscode.HoverProvider {
+    provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.Hover | undefined {
+        const text = document.getText();
+
+        // Directive hover
+        const lineText = document.lineAt(position.line).text;
+        const dirMatch = lineText.match(/@[\w-]+/);
+        if (dirMatch) {
+            const start = lineText.indexOf(dirMatch[0]);
+            const end = start + dirMatch[0].length;
+            if (position.character >= start && position.character <= end) {
+                const spec = DIRECTIVE_SPECS.find(s => s.label === dirMatch[0]);
+                if (spec) {
+                    const md = new vscode.MarkdownString(`**${spec.label}** — ${spec.detail}\n\n${spec.doc}`);
+                    return new vscode.Hover(md, new vscode.Range(position.line, start, position.line, end));
+                }
+            }
+        }
+
+        // Variable hover
+        const ref = findVarRefs(text).find(r =>
+            r.line === position.line && position.character >= r.startCol && position.character <= r.endCol
+        );
+        if (ref) {
+            const { fileVars, envVars, importedVars, requestNames } = collectKnownNames(document);
+            const md = new vscode.MarkdownString();
+            // precedence: system env > .env > file var (system env not statically resolvable)
+            if (Object.prototype.hasOwnProperty.call(envVars, ref.root)) {
+                md.appendMarkdown(`**${ref.root}** _(\`.env\`)_\n\n\`${envVars[ref.root]}\``);
+            } else if (Object.prototype.hasOwnProperty.call(fileVars, ref.root)) {
+                md.appendMarkdown(`**${ref.root}** _(file variable)_\n\n\`${fileVars[ref.root]}\``);
+            } else if (Object.prototype.hasOwnProperty.call(importedVars, ref.root)) {
+                md.appendMarkdown(`**${ref.root}** _(imported)_\n\n\`${importedVars[ref.root]}\``);
+            } else if (requestNames.has(ref.root)) {
+                md.appendMarkdown(`**${ref.root}** _(named request)_\n\nResolved at runtime from the response — e.g. \`{{${ref.root}.body.field}}\`, \`{{${ref.root}.headers.Name}}\`.`);
+            } else {
+                md.appendMarkdown(`**${ref.root}** — may resolve from a system environment variable, or is undefined.`);
+            }
+            return new vscode.Hover(md, new vscode.Range(ref.line, ref.startCol, ref.line, ref.endCol));
+        }
+
+        return undefined;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+export function computeDiagnostics(document: vscode.TextDocument): vscode.Diagnostic[] {
+    const text = document.getText();
+    const diags: vscode.Diagnostic[] = [];
+
+    const { fileVars, envVars, importedVars, requestNames } = collectKnownNames(document);
+
+    // Undefined variable references (skip names that could come from system env —
+    // we only warn when it's clearly none of the known sources and not all-caps env-style).
+    for (const ref of findVarRefs(text)) {
+        const known =
+            Object.prototype.hasOwnProperty.call(fileVars, ref.root) ||
+            Object.prototype.hasOwnProperty.call(envVars, ref.root) ||
+            Object.prototype.hasOwnProperty.call(importedVars, ref.root) ||
+            requestNames.has(ref.root) ||
+            Object.prototype.hasOwnProperty.call(process.env, ref.root);
+        if (!known) {
+            const range = new vscode.Range(ref.line, ref.startCol, ref.line, ref.endCol);
+            diags.push(new vscode.Diagnostic(
+                range,
+                `Undefined variable "${ref.root}". Define it with @${ref.root} = ..., in a .env file, or as a named request.`,
+                vscode.DiagnosticSeverity.Warning
+            ));
+        }
+    }
+
+    // @requires pointing at a non-existent @name
+    for (const req of findRequiresRefs(text)) {
+        if (!requestNames.has(req.name)) {
+            const range = new vscode.Range(req.line, req.startCol, req.line, req.endCol);
+            diags.push(new vscode.Diagnostic(
+                range,
+                `@requires references unknown request "${req.name}". No @name = ${req.name} found in this file or its imports.`,
+                vscode.DiagnosticSeverity.Error
+            ));
+        }
+    }
+
+    // Duplicate @name declarations
+    const seenNames = new Map<string, number>();
+    for (const decl of findNameDeclarations(text)) {
+        const prev = seenNames.get(decl.name);
+        if (prev !== undefined) {
+            const range = new vscode.Range(decl.line, decl.startCol, decl.line, decl.endCol);
+            diags.push(new vscode.Diagnostic(
+                range,
+                `Duplicate request name "${decl.name}" (first defined on line ${prev + 1}).`,
+                vscode.DiagnosticSeverity.Warning
+            ));
+        } else {
+            seenNames.set(decl.name, decl.line);
+        }
+    }
+
+    // Malformed @assert (has content but doesn't match target op value with a valid op)
+    const lines = text.split(/\r?\n/);
+    const assertLine = /^\s*@assert\s+(.+)$/;
+    const validAssert = /^\s*@assert\s+\S+\s+(==|!=|contains|!contains)\s+.+$/;
+    const knownOps = new Set(['==', '!=', 'contains', '!contains']);
+    for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(assertLine);
+        if (m && !validAssert.test(lines[i])) {
+            const parts = m[1].trim().split(/\s+/);
+            let message = 'Invalid @assert. Expected: @assert <target> <op> <value>';
+            if (parts.length >= 2 && !knownOps.has(parts[1])) {
+                message = `Invalid @assert operator "${parts[1]}". Use one of: ==, !=, contains, !contains.`;
+            }
+            const start = lines[i].indexOf('@assert');
+            const range = new vscode.Range(i, start, i, lines[i].length);
+            diags.push(new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error));
+        }
+    }
+
+    return diags;
+}
+
+// ---------------------------------------------------------------------------
+// Document symbols / outline
+// ---------------------------------------------------------------------------
+
+class HttpDocumentSymbolProvider implements vscode.DocumentSymbolProvider {
+    provideDocumentSymbols(document: vscode.TextDocument): vscode.DocumentSymbol[] {
+        const text = document.getText();
+        const blocks = parseDocumentRequests(text);
+        const methodRegex = /^\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE)\s+(\S+)/;
+        const symbols: vscode.DocumentSymbol[] = [];
+
+        for (const block of blocks) {
+            const blockLines = block.text.split(/\r?\n/);
+            let detail = '';
+            let selectionLine = block.startLine;
+            for (let i = 0; i < blockLines.length; i++) {
+                const mm = blockLines[i].match(methodRegex);
+                if (mm) {
+                    detail = `${mm[1]} ${mm[2]}`;
+                    selectionLine = block.startLine + i;
+                    break;
+                }
+            }
+            // Skip empty trailing blocks with no request line and no name
+            if (!detail && !block.name) { continue; }
+
+            const label = block.name ?? (detail || '(request)');
+            const fullRange = new vscode.Range(block.startLine, 0, block.endLine, Number.MAX_SAFE_INTEGER);
+            const selRange = new vscode.Range(selectionLine, 0, selectionLine, Number.MAX_SAFE_INTEGER);
+            const sym = new vscode.DocumentSymbol(
+                label,
+                block.name ? detail : '',
+                vscode.SymbolKind.Function,
+                fullRange,
+                selRange
+            );
+            symbols.push(sym);
+        }
+        return symbols;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Go-to-definition  &  find-references
+// ---------------------------------------------------------------------------
+
+/** Returns the word/token under the cursor for @name/@requires/{{var}} contexts. */
+function tokenAt(document: vscode.TextDocument, position: vscode.Position): { kind: 'name' | 'variable'; value: string } | undefined {
+    const text = document.getText();
+
+    // @requires = X  →  request name
+    const req = findRequiresRefs(text).find(r =>
+        r.line === position.line && position.character >= r.startCol && position.character <= r.endCol);
+    if (req) { return { kind: 'name', value: req.name }; }
+
+    // @name = X  →  request name (self / for references)
+    const decl = findNameDeclarations(text).find(r =>
+        r.line === position.line && position.character >= r.startCol && position.character <= r.endCol);
+    if (decl) { return { kind: 'name', value: decl.name }; }
+
+    // {{ var }}
+    const ref = findVarRefs(text).find(r =>
+        r.line === position.line && position.character >= r.startCol && position.character <= r.endCol);
+    if (ref) { return { kind: 'variable', value: ref.root }; }
+
+    return undefined;
+}
+
+class HttpDefinitionProvider implements vscode.DefinitionProvider {
+    provideDefinition(document: vscode.TextDocument, position: vscode.Position): vscode.Location[] {
+        const token = tokenAt(document, position);
+        if (!token) { return []; }
+        const text = document.getText();
+        const locations: vscode.Location[] = [];
+
+        if (token.kind === 'name') {
+            for (const decl of findNameDeclarations(text)) {
+                if (decl.name === token.value) {
+                    locations.push(new vscode.Location(document.uri,
+                        new vscode.Range(decl.line, decl.startCol, decl.line, decl.endCol)));
+                }
+            }
+        } else {
+            // variable → its @var declaration in this file (if any)
+            const declRe = new RegExp(`^(\\s*@)(${escapeRegExp(token.value)})\\s*=`);
+            const lines = text.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+                const m = lines[i].match(declRe);
+                if (m) {
+                    const startCol = m[1].length;
+                    locations.push(new vscode.Location(document.uri,
+                        new vscode.Range(i, startCol, i, startCol + token.value.length)));
+                }
+            }
+            // or a named request that exposes it
+            for (const decl of findNameDeclarations(text)) {
+                if (decl.name === token.value) {
+                    locations.push(new vscode.Location(document.uri,
+                        new vscode.Range(decl.line, decl.startCol, decl.line, decl.endCol)));
+                }
+            }
+        }
+        return locations;
+    }
+}
+
+class HttpReferenceProvider implements vscode.ReferenceProvider {
+    provideReferences(document: vscode.TextDocument, position: vscode.Position): vscode.Location[] {
+        const token = tokenAt(document, position);
+        if (!token) { return []; }
+        const text = document.getText();
+        const locations: vscode.Location[] = [];
+
+        if (token.kind === 'name') {
+            // every @requires = name and {{name...}}
+            for (const req of findRequiresRefs(text)) {
+                if (req.name === token.value) {
+                    locations.push(new vscode.Location(document.uri,
+                        new vscode.Range(req.line, req.startCol, req.line, req.endCol)));
+                }
+            }
+            for (const ref of findVarRefs(text)) {
+                if (ref.root === token.value) {
+                    locations.push(new vscode.Location(document.uri,
+                        new vscode.Range(ref.line, ref.startCol, ref.line, ref.endCol)));
+                }
+            }
+            for (const decl of findNameDeclarations(text)) {
+                if (decl.name === token.value) {
+                    locations.push(new vscode.Location(document.uri,
+                        new vscode.Range(decl.line, decl.startCol, decl.line, decl.endCol)));
+                }
+            }
+        } else {
+            for (const ref of findVarRefs(text)) {
+                if (ref.root === token.value) {
+                    locations.push(new vscode.Location(document.uri,
+                        new vscode.Range(ref.line, ref.startCol, ref.line, ref.endCol)));
+                }
+            }
+        }
+        return locations;
+    }
+}
+
+function escapeRegExp(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ---------------------------------------------------------------------------
+// Folding ranges (collapse each ### request block)
+// ---------------------------------------------------------------------------
+
+class HttpFoldingRangeProvider implements vscode.FoldingRangeProvider {
+    provideFoldingRanges(document: vscode.TextDocument): vscode.FoldingRange[] {
+        const ranges: vscode.FoldingRange[] = [];
+        for (const block of parseDocumentRequests(document.getText())) {
+            // only fold blocks that span more than one line
+            if (block.endLine > block.startLine) {
+                ranges.push(new vscode.FoldingRange(block.startLine, block.endLine, vscode.FoldingRangeKind.Region));
+            }
+        }
+        return ranges;
     }
 }
 
