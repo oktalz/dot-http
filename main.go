@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
+	"github.com/oktalz/dot-http/internal/dotenv"
 	"github.com/oktalz/dot-http/oauth2"
 	"github.com/oktalz/dot-http/version"
 )
@@ -274,7 +274,7 @@ func main() {
 	if cfg.envName != "" {
 		envFile = cfg.envName + ".env"
 	}
-	_ = godotenv.Load(envFile)
+	_ = dotenv.Load(envFile)
 
 	filePath := args[0]
 	var targetName string
